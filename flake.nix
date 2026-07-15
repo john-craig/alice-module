@@ -1,5 +1,5 @@
 {
-  description = "Declarative development-environment provisioning for Bob";
+  description = "Declarative workspace provisioning for Bob — Alice Nix Module";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -25,36 +25,36 @@
     in
     {
       # -----------------------------------------------------------------------
-      # lib.mkEnvironment
+      # lib.mkWorkspace
       #
-      # Build an environment derivation from a module file.
+      # Build a workspace derivation from a module file.
       #
       # Usage:
       #
       #   let
-      #     envs = inputs.dev-envs;
-      #     pkgs = import inputs.nixpkgs { inherit system; };
-      #     mkEnv = envs.lib.mkEnvironment pkgs;
+      #     alice = inputs.alice-module;
+      #     pkgs  = import inputs.nixpkgs { inherit system; };
+      #     mkWs  = alice.lib.mkWorkspace pkgs;
       #   in {
-      #     packages.my-env = mkEnv "my-env" ./environments/my-env/default.nix;
+      #     packages.my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
       #   }
       #
       # The module file must follow the convention described in
-      # modules/environments.nix — a function of { pkgs, envs, utils } that
-      # returns { envs."<name>" = { environment = ...; }; }.
+      # modules/workspaces.nix — a function of { pkgs, workspaces, utils } that
+      # returns { workspaces."<name>" = { workspace = ...; }; }.
       #
       # `utils.root relPath` resolves a path relative to the *calling* flake's
-      # root.  Pass `flakeRoot` (the second arg to mkEnvironment) to customise
+      # root.  Pass `flakeRoot` (the second arg to mkWorkspaceIn) to customise
       # this; if omitted it defaults to the root of *this* flake (useful for
-      # the built-in example environments).
+      # the built-in example workspaces).
       # -----------------------------------------------------------------------
-      lib.mkEnvironment = pkgs:
+      lib.mkWorkspace = pkgs:
         let
           # When consumers call this from their own flake they will import
-          # modules/environments.nix with their own flakeRoot.  The default
+          # modules/workspaces.nix with their own flakeRoot.  The default
           # here points at this flake's own root so the built-in example
-          # environments resolve correctly.
-          engine = import ./modules/environments.nix {
+          # workspaces resolve correctly.
+          engine = import ./modules/workspaces.nix {
             inherit pkgs;
             flakeRoot = self;
           };
@@ -62,19 +62,19 @@
         engine;
 
       # -----------------------------------------------------------------------
-      # lib.mkEnvironmentIn
+      # lib.mkWorkspaceIn
       #
-      # Like lib.mkEnvironment but lets the caller supply a custom flakeRoot
+      # Like lib.mkWorkspace but lets the caller supply a custom flakeRoot
       # so that utils.root resolves relative to their own repository.
       #
       # Usage (in a downstream flake):
       #
-      #   packages.my-env =
-      #     inputs.dev-envs.lib.mkEnvironmentIn pkgs myFlake.self
-      #       "my-env" ./environments/my-env/default.nix;
+      #   packages.my-workspace =
+      #     inputs.alice-module.lib.mkWorkspaceIn pkgs myFlake.self
+      #       "my-workspace" ./workspaces/my-workspace/default.nix;
       # -----------------------------------------------------------------------
-      lib.mkEnvironmentIn = pkgs: flakeRoot:
-        import ./modules/environments.nix { inherit pkgs flakeRoot; };
+      lib.mkWorkspaceIn = pkgs: flakeRoot:
+        import ./modules/workspaces.nix { inherit pkgs flakeRoot; };
 
       # -----------------------------------------------------------------------
       # Per-system outputs
@@ -86,7 +86,7 @@
             config.allowUnfree = true;
           };
 
-          mkEnv = self.lib.mkEnvironment pkgs;
+          mkWs = self.lib.mkWorkspace pkgs;
         in
         {
           # ------------------------------------------------------------------
@@ -95,27 +95,63 @@
           hello = pkgs.callPackage ./packages/hello { inherit pkgs; };
 
           # ------------------------------------------------------------------
-          # Example environment: blank
+          # Example workspace: blank
           #
-          # A minimal environment that writes a single hello.txt file.
-          # Run with:  nix run .#env-blank -- /path/to/target-dir
+          # A minimal workspace that writes a single hello.txt file.
+          # Run with:  nix run .#workspace-blank -- /path/to/target-dir
           # ------------------------------------------------------------------
-          env-blank = mkEnv "blank" ./environments/blank/default.nix;
+          workspace-blank = mkWs "blank" ./workspaces/blank/default.nix;
 
-          # Default package: the blank environment (demonstrates the machinery)
-          default = mkEnv "blank" ./environments/blank/default.nix;
+          # Default package: the blank workspace (demonstrates the machinery)
+          default = mkWs "blank" ./workspaces/blank/default.nix;
+        }
+      );
+
+      checks = forEachSystem (system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfree = true;
+          };
+        in
+        {
+          # ------------------------------------------------------------------
+          # blank-workspace-output
+          #
+          # Runs workspace-blank against a temporary directory and asserts that
+          # hello.txt is created with the expected content.
+          # ------------------------------------------------------------------
+          blank-workspace-output = pkgs.runCommand "blank-workspace-output" {
+            nativeBuildInputs = [ self.packages.${system}.workspace-blank ];
+          } ''
+            target=$(mktemp -d)
+            workspace-blank "$target"
+
+            expected="Hello, world!"
+            actual=$(cat "$target/hello.txt")
+
+            if [ "$actual" != "$expected" ]; then
+              echo "FAIL: hello.txt content mismatch"
+              echo "  expected: $expected"
+              echo "  actual:   $actual"
+              exit 1
+            fi
+
+            echo "PASS: hello.txt contains expected content"
+            touch $out
+          '';
         }
       );
 
       apps = forEachSystem (system: {
-        env-blank = {
+        workspace-blank = {
           type    = "app";
-          program = "${self.packages.${system}.env-blank}/bin/env-blank";
+          program = "${self.packages.${system}.workspace-blank}/bin/workspace-blank";
         };
 
         default = {
           type    = "app";
-          program = "${self.packages.${system}.env-blank}/bin/env-blank";
+          program = "${self.packages.${system}.workspace-blank}/bin/workspace-blank";
         };
       });
     };

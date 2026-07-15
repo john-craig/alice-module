@@ -1,43 +1,43 @@
-# modules/environments.nix
+# modules/workspaces.nix
 #
-# Core environment-building machinery.
+# Core workspace-building machinery.
 #
 # This module is imported by flake.nix and re-exported as
-# `self.lib.mkEnvironment` so that downstream flake consumers can call it
+# `self.lib.mkWorkspace` so that downstream flake consumers can call it
 # directly.
 #
 # The public API is a single function:
 #
-#   mkEnvironment pkgs name moduleFile
+#   mkWorkspace pkgs name moduleFile
 #
 # `pkgs`       – a nixpkgs package set (import nixpkgs { inherit system; })
-# `name`       – the environment name string, e.g. "my-env"
-# `moduleFile` – a Nix path to the environment module, e.g. ./envs/my-env/default.nix
+# `name`       – the workspace name string, e.g. "my-workspace"
+# `moduleFile` – a Nix path to the workspace module, e.g. ./workspaces/my-workspace/default.nix
 #
-# An environment module is a function of the form:
+# A workspace module is a function of the form:
 #
-#   { pkgs, envs, utils }:
+#   { pkgs, workspaces, utils }:
 #   {
-#     envs."my-env" = {
-#       environment.file."hello.txt" = "Hello, world!\n";
-#       environment.bob.rules."my-rule.md" = { source = utils.root "rules/my-rule.md"; };
-#       environment.bob.skills."MySkill.md" = { source = utils.root "skills/MySkill.md"; };
-#       environment.bob.mcpServers.my-server = {
+#     workspaces."my-workspace" = {
+#       workspace.file."hello.txt" = "Hello, world!\n";
+#       workspace.bob.rules."my-rule.md" = { source = utils.root "rules/my-rule.md"; };
+#       workspace.bob.skills."MySkill.md" = { source = utils.root "skills/MySkill.md"; };
+#       workspace.bob.mcpServers.my-server = {
 #         command     = "${pkgs.nodejs}/bin/npx";
 #         args        = [ "-y" "my-server@latest" ];
 #         alwaysAllow = [ "search" ];
 #       };
-#       environment.packages = [ pkgs.ripgrep ];
+#       workspace.packages = [ pkgs.ripgrep ];
 #     };
 #   }
 #
 # `utils.root relPath`       resolves a path relative to the flake root.
 # `utils.repo repo relPath`  resolves a path inside an externally fetched repo.
 #
-# The produced derivation is a `writeShellApplication` named `env-<name>`.
+# The produced derivation is a `writeShellApplication` named `workspace-<name>`.
 # Run it with a target directory to provision that directory:
 #
-#   env-my-env /path/to/target-dir
+#   workspace-my-workspace /path/to/target-dir
 #
 { pkgs, flakeRoot }:
 
@@ -74,11 +74,11 @@ let
     lib.types.coercedTo lib.types.lines (s: { text = s; }) fileEntryType;
 
   # ---------------------------------------------------------------------------
-  # envOptions — the full NixOS-style module options accepted by every
-  # environment's config block.
+  # workspaceOptions — the full NixOS-style module options accepted by every
+  # workspace's config block.
   # ---------------------------------------------------------------------------
-  envOptions = {
-    options.environment = {
+  workspaceOptions = {
+    options.workspace = {
 
       file = lib.mkOption {
         type        = lib.types.attrsOf coercedFileEntry;
@@ -189,7 +189,7 @@ let
   };
 
   # ---------------------------------------------------------------------------
-  # utils — helpers passed into every environment module.
+  # utils — helpers passed into every workspace module.
   #
   # `utils.root relPath`       →  <flakeRoot>/<relPath>   (a Nix path)
   # `utils.repo fetched path`  →  <fetched>/<path>        (a Nix path)
@@ -202,25 +202,25 @@ let
 in
 
 # ---------------------------------------------------------------------------
-# mkEnvironment — public entry point
+# mkWorkspace — public entry point
 #
-# Returns a `writeShellApplication` derivation named `env-<name>` that,
+# Returns a `writeShellApplication` derivation named `workspace-<name>` that,
 # when run with a target directory, provisions that directory according to the
 # options declared in `moduleFile`.
 # ---------------------------------------------------------------------------
 name: moduleFile:
   let
-    returned    = (import moduleFile) { inherit pkgs utils; envs = {}; };
-    configBlock = returned.envs.${name};
+    returned    = (import moduleFile) { inherit pkgs utils; workspaces = {}; };
+    configBlock = returned.workspaces.${name};
 
     evaluated = lib.evalModules {
       modules = [
-        envOptions
+        workspaceOptions
         { config = configBlock; }
       ];
     };
 
-    cfg = evaluated.config.environment;
+    cfg = evaluated.config.workspace;
 
     toStorePath = destName: entry:
       if entry.source != null then entry.source
@@ -283,7 +283,7 @@ name: moduleFile:
     );
   in
   pkgs.writeShellApplication {
-    name          = "env-${name}";
+    name          = "workspace-${name}";
     runtimeInputs = [ pkgs.coreutils ];
 
     text = ''
@@ -291,9 +291,9 @@ name: moduleFile:
 
       usage() {
         cat <<'USAGE'
-      Usage: env-${name} <directory>
+      Usage: workspace-${name} <directory>
 
-      Sets up the "${name}" environment in the given directory.
+      Sets up the "${name}" workspace in the given directory.
 
       Arguments:
         directory   Path to the target directory (must already exist)
@@ -313,9 +313,9 @@ name: moduleFile:
         exit 1
       fi
 
-      echo "Setting up environment '${name}' in $TARGET_DIR ..."
+      echo "Setting up workspace '${name}' in $TARGET_DIR ..."
       ${writeStatements}
       ${linkStatements}
       echo "Done."
     '';
-  };
+  }
