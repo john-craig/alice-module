@@ -53,9 +53,7 @@ modules/
 workspaces/
   blank/default.nix              Minimal built-in example workspace
 packages/
-  analyze-plx-security/          Nix package wrapping analyze_plx_security.py
-  plx-scrape-comments/           Nix package wrapping comment-scraper
-  verify-code-snippets/          Nix package wrapping verify_code_snippets.py
+  hello/                         Sample package (hello-world shell script)
 ```
 
 ---
@@ -91,21 +89,10 @@ mkWs = inputs.alice-module.lib.mkWorkspaceIn pkgs self;
 A built-in demo workspace that writes a single `hello.txt` to the target
 directory.
 
-### `packages.<system>.{analyze-plx-security,plx-scrape-comments,verify-code-snippets}`
+### `packages.<system>.hello`
 
-Nix derivations wrapping the Python utility scripts found under `utilities/`.
-These are intended for use inside workspace modules:
-
-```nix
-{ pkgs, workspaces, utils }:
-let
-  analyzePlxSecurity = pkgs.callPackage inputs.alice-module + "/packages/analyze-plx-security" { inherit pkgs; };
-in {
-  workspaces."my-workspace" = {
-    workspace.packages = [ analyzePlxSecurity ];
-  };
-}
-```
+A sample shell-script package included as a starting point for adding real
+packages to the flake.
 
 ---
 
