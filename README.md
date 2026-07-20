@@ -244,3 +244,126 @@ in {
   workspace.bob.skills."external".source = utils.repo external "skills";
 }
 ```
+
+---
+
+## Docker usage
+
+The repository ships a `Dockerfile` that lets you provision a workspace
+**without installing Nix on your host machine**.  The image is built once;
+at runtime it runs the pre-built `workspace-blank` binary directly from the
+Nix store closure baked into the image — no Nix evaluation or network access
+is needed when the container starts.
+
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker
+  Engine on Linux) installed and the daemon running.
+- No Nix installation required on the host.
+
+### Build the image
+
+```bash
+docker build -t alice-module:local .
+```
+
+`nix flake check` is executed during the build.  If the flake check fails,
+the Docker build fails — a broken flake can never produce a successful image.
+
+> **Apple Silicon (M1/M2/M3) vs Intel/AMD**
+> The `nixos/nix` base image is published for both `linux/amd64` and
+> `linux/arm64`.  Docker Desktop on Apple Silicon automatically selects
+> `linux/arm64`; on Linux x86-64 hosts it selects `linux/amd64`.  No flags
+> or overrides are required.
+
+### Run the container
+
+```bash
+mkdir -p generated-workspace
+
+docker run --rm \
+  -v "$PWD/generated-workspace:/workspace" \
+  alice-module:local
+```
+
+**What happens:**
+
+| Step | Detail |
+|---|---|
+| `--rm` | Container is removed automatically when it exits |
+| `-v "$PWD/generated-workspace:/workspace"` | Bind-mounts your host directory into the container at `/workspace` |
+| The entrypoint | Calls the pre-built `workspace-blank` binary with `/workspace` as the target |
+| After exit | Files written inside `/workspace` remain on your host |
+
+**Expected output:**
+
+```
+Setting up workspace 'blank' in /workspace ...
+  wrote hello.txt
+Done.
+```
+
+### Verify the output
+
+```bash
+cat generated-workspace/hello.txt
+# → Hello, world!
+```
+
+### Pass a custom target path
+
+If you mount to a different container path, pass it as an argument:
+
+```bash
+docker run --rm \
+  -v "$PWD/generated-workspace:/output" \
+  alice-module:local /output
+```
+
+### Troubleshooting
+
+#### Target directory does not exist
+
+```
+Error: target directory does not exist: /workspace
+```
+
+The host directory must exist **before** running the container.
+Create it first:
+
+```bash
+mkdir -p generated-workspace
+docker run --rm -v "$PWD/generated-workspace:/workspace" alice-module:local
+```
+
+#### Docker daemon not running
+
+```
+Cannot connect to the Docker daemon at unix:///var/run/docker.sock
+```
+
+Start Docker Desktop (macOS/Windows) or run `sudo systemctl start docker`
+(Linux), then retry.
+
+#### Permission or ownership issues
+
+Files written by the container are owned by `root` (UID 0) because the
+`nixos/nix` image runs as root.  To fix ownership after provisioning:
+
+```bash
+sudo chown -R "$USER" generated-workspace
+```
+
+Alternatively, add `--user "$(id -u):$(id -g)"` to the `docker run` command
+if your workspace does not require symlinks (symlinks to the Nix store will
+not work with a non-root user inside the container).
+
+#### Nix dependency download failures during build
+
+The `docker build` step downloads Nix store paths from `cache.nixos.org`.
+If your build environment has restricted internet access:
+
+1. Check that `cache.nixos.org` is reachable from the build host.
+2. If using a corporate proxy, set `--build-arg https_proxy=...` or configure
+   Docker's proxy settings.
+3. Re-run `docker build` — Nix downloads are content-addressed and resumable.

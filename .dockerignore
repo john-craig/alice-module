@@ -1,0 +1,28 @@
+# =============================================================================
+# .dockerignore — Alice Nix Module
+#
+# Excludes files that must not be copied into the Docker build context.
+# Keeping the context small speeds up builds and avoids leaking local state.
+# =============================================================================
+
+# Git internals — not needed inside the image
+.git
+.gitignore
+
+# Nix build artefacts produced on the host
+result
+result-*
+
+# Docker files themselves (no need to copy into the image)
+Dockerfile
+.dockerignore
+
+# Generated workspace output directories (host-side artefacts)
+generated-workspace
+
+# Editor and OS noise
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
