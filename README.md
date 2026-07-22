@@ -193,6 +193,7 @@ Entries merged into `.bob/mcp.json`.
 |---|---|---|---|
 | `type` | `str` or `null` | `null` | Transport type (`"streamable-http"`). Set for HTTP servers; omit for stdio. |
 | `url` | `str` or `null` | `null` | URL for HTTP-based servers. |
+| `headers` | `attrsOf str` | `{}` | HTTP headers sent with every request (e.g. `Authorization`). HTTP servers only. |
 | `command` | `str` or `null` | `null` | Executable for stdio servers. |
 | `args` | `listOf str` | `[]` | Arguments for the server executable. |
 | `env` | `attrsOf str` | `{}` | Environment variables for the server process. |

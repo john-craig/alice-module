@@ -159,6 +159,15 @@ let
               default     = null;
               description = "URL for HTTP-based MCP servers. Required when `type` is set.";
             };
+            headers = lib.mkOption {
+              type        = lib.types.attrsOf lib.types.str;
+              default     = {};
+              description = ''
+                HTTP headers sent with every request to an
+                HTTP-based MCP server (e.g. Authorization).
+                Only applicable when `type` is set.
+              '';
+            };
             command = lib.mkOption {
               type        = lib.types.nullOr lib.types.str;
               default     = null;
@@ -241,6 +250,7 @@ name: moduleFile:
           mcpServers = lib.mapAttrs (_: srv:
             if srv.type != null then
               { type = srv.type; url = srv.url; }
+              // lib.optionalAttrs (srv.headers     != {}) { headers     = srv.headers; }
               // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; }
             else
               { command = srv.command; }
