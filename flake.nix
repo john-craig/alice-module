@@ -29,7 +29,7 @@
       #
       # Build a workspace derivation from a module file.
       #
-      # Usage:
+      # Usage (in a downstream flake):
       #
       #   let
       #     alice = inputs.alice-module;
@@ -69,9 +69,11 @@
       #
       # Usage (in a downstream flake):
       #
-      #   packages.my-workspace =
-      #     inputs.alice-module.lib.mkWorkspaceIn pkgs myFlake.self
-      #       "my-workspace" ./workspaces/my-workspace/default.nix;
+      #   let
+      #     mkWs = inputs.alice-module.lib.mkWorkspaceIn pkgs self;
+      #   in {
+      #     packages.my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
+      #   }
       # -----------------------------------------------------------------------
       lib.mkWorkspaceIn = pkgs: flakeRoot:
         import ./modules/workspaces.nix { inherit pkgs flakeRoot; };
@@ -95,15 +97,41 @@
           hello = pkgs.callPackage ./packages/hello { inherit pkgs; };
 
           # ------------------------------------------------------------------
-          # Example workspace: blank
+          # Example workspace: sample-workspace
           #
-          # A minimal workspace that writes a single hello.txt file.
-          # Run with:  nix run .#workspace-blank -- /path/to/target-dir
+          # Demonstrates every supported workspace option (workspace.file,
+          # workspace.bob.rules, workspace.bob.skills, workspace.bob.mcpServers,
+          # workspace.packages).
+          #
+          # The first argument to mkWs is the workspace *name* — it must match
+          # the key used in workspaces."<name>" inside the module file.
+          # The second argument is the path to the module file itself.
+          #
+          # Run with:  nix run .#workspace-sample-workspace -- /path/to/target-dir
           # ------------------------------------------------------------------
-          workspace-blank = mkWs "blank" ./workspaces/blank/default.nix;
+          workspace-sample-workspace =
+            mkWs "sample-workspace" ./examples/sample-workspace/default.nix;
 
-          # Default package: the blank workspace (demonstrates the machinery)
-          default = mkWs "blank" ./workspaces/blank/default.nix;
+          # ------------------------------------------------------------------
+          # Example workspace: extended-workspace
+          #
+          # Demonstrates how to override and extend an upstream workspace
+          # definition.  The module at examples/workspace.nix imports
+          # examples/sample-workspace/default.nix, merges its config block
+          # using Nix attribute operators (// for attrsets, ++ for lists),
+          # and re-exports the result under a different workspace name.
+          #
+          # Both workspaces can coexist and are built independently — the
+          # extended one shares no mutable state with the upstream one.
+          #
+          # Run with:  nix run .#workspace-extended-workspace -- /path/to/target-dir
+          # ------------------------------------------------------------------
+          workspace-extended-workspace =
+            mkWs "extended-workspace" ./examples/workspace.nix;
+
+          # Default package: the sample workspace
+          default =
+            mkWs "sample-workspace" ./examples/sample-workspace/default.nix;
         }
       );
 
@@ -116,42 +144,97 @@
         in
         {
           # ------------------------------------------------------------------
-          # blank-workspace-output
+          # sample-workspace-output
           #
-          # Runs workspace-blank against a temporary directory and asserts that
-          # hello.txt is created with the expected content.
+          # Runs workspace-sample-workspace against a temporary directory and
+          # asserts that key output files are created with expected content.
           # ------------------------------------------------------------------
-          blank-workspace-output = pkgs.runCommand "blank-workspace-output" {
-            nativeBuildInputs = [ self.packages.${system}.workspace-blank ];
+          sample-workspace-output = pkgs.runCommand "sample-workspace-output" {
+            nativeBuildInputs = [ self.packages.${system}.workspace-sample-workspace ];
           } ''
             target=$(mktemp -d)
-            workspace-blank "$target"
+            workspace-sample-workspace "$target"
 
-            expected="Hello, world!"
-            actual=$(cat "$target/hello.txt")
-
-            if [ "$actual" != "$expected" ]; then
-              echo "FAIL: hello.txt content mismatch"
-              echo "  expected: $expected"
-              echo "  actual:   $actual"
+            # README.md should exist (written with dontIgnore = true)
+            if [ ! -f "$target/README.md" ]; then
+              echo "FAIL: README.md was not created"
               exit 1
             fi
 
-            echo "PASS: hello.txt contains expected content"
+            # config/settings.json should exist
+            if [ ! -f "$target/config/settings.json" ]; then
+              echo "FAIL: config/settings.json was not created"
+              exit 1
+            fi
+
+            # .bob/mcp.json should exist (mcpServers were declared)
+            if [ ! -f "$target/.bob/mcp.json" ]; then
+              echo "FAIL: .bob/mcp.json was not created"
+              exit 1
+            fi
+
+            echo "PASS: sample-workspace output verified"
+            touch $out
+          '';
+
+          # ------------------------------------------------------------------
+          # extended-workspace-output
+          #
+          # Runs workspace-extended-workspace and verifies that both inherited
+          # and override/extended files are present.
+          # ------------------------------------------------------------------
+          extended-workspace-output = pkgs.runCommand "extended-workspace-output" {
+            nativeBuildInputs = [ self.packages.${system}.workspace-extended-workspace ];
+          } ''
+            target=$(mktemp -d)
+            workspace-extended-workspace "$target"
+
+            # README.md — overridden by the extended workspace
+            if ! grep -q "extended-workspace" "$target/README.md"; then
+              echo "FAIL: README.md does not contain extended-workspace header"
+              exit 1
+            fi
+
+            # extended-notes.md — added only by the extended workspace
+            if [ ! -f "$target/extended-notes.md" ]; then
+              echo "FAIL: extended-notes.md was not created"
+              exit 1
+            fi
+
+            # .bob/rules/sample-rules.md — inherited from upstream
+            if [ ! -f "$target/.bob/rules/sample-rules.md" ]; then
+              echo "FAIL: upstream sample-rules.md was not inherited"
+              exit 1
+            fi
+
+            # .bob/rules/extended-rules.md — added by the extended workspace
+            if [ ! -f "$target/.bob/rules/extended-rules.md" ]; then
+              echo "FAIL: extended-rules.md was not created"
+              exit 1
+            fi
+
+            echo "PASS: extended-workspace output verified"
             touch $out
           '';
         }
       );
 
       apps = forEachSystem (system: {
-        workspace-blank = {
+        # The sample workspace app — the canonical starting point for new consumers.
+        workspace-sample-workspace = {
           type    = "app";
-          program = "${self.packages.${system}.workspace-blank}/bin/workspace-blank";
+          program = "${self.packages.${system}.workspace-sample-workspace}/bin/workspace-sample-workspace";
+        };
+
+        # The extended workspace app — shows override/extension in action.
+        workspace-extended-workspace = {
+          type    = "app";
+          program = "${self.packages.${system}.workspace-extended-workspace}/bin/workspace-extended-workspace";
         };
 
         default = {
           type    = "app";
-          program = "${self.packages.${system}.workspace-blank}/bin/workspace-blank";
+          program = "${self.packages.${system}.workspace-sample-workspace}/bin/workspace-sample-workspace";
         };
       });
     };

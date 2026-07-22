@@ -50,8 +50,9 @@ file declared in its configuration.
 flake.nix                        Flake definition; exposes lib and packages
 modules/
   workspaces.nix                 Core mkWorkspace engine
-workspaces/
-  blank/default.nix              Minimal built-in example workspace
+examples/
+  sample-workspace/default.nix   Full example workspace (all fields demonstrated)
+  workspace.nix                  Extended workspace (shows override/extend pattern)
 packages/
   hello/                         Sample package (hello-world shell script)
 ```
@@ -84,10 +85,17 @@ to their repository.
 mkWs = inputs.alice-module.lib.mkWorkspaceIn pkgs self;
 ```
 
-### `packages.<system>.workspace-blank`
+### `packages.<system>.workspace-sample-workspace`
 
-A built-in demo workspace that writes a single `hello.txt` to the target
-directory.
+A built-in example workspace that demonstrates every supported option —
+`workspace.file`, `workspace.bob.rules`, `workspace.bob.skills`,
+`workspace.bob.mcpServers`, and `workspace.packages`.
+
+### `packages.<system>.workspace-extended-workspace`
+
+A built-in example that shows how to override and extend
+`workspace-sample-workspace` without forking it (see
+[Overriding and extending a workspace](#overriding-and-extending-a-workspace)).
 
 ### `packages.<system>.hello`
 
@@ -142,6 +150,56 @@ Register the workspace in your downstream flake:
 ```nix
 packages.${system}.workspace-my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
 ```
+
+---
+
+## Overriding and extending a workspace
+
+You can build on an existing workspace definition — from this flake or any
+other — without forking it.  The pattern uses plain Nix attribute operators:
+
+- `//` merges two attrsets, with the right-hand side winning on conflicts.
+  Use it to override individual files, rules, skills, or MCP server entries
+  while preserving every key you don't mention.
+- `++` appends lists.  Use it for `workspace.packages` to add packages on top
+  of the upstream set rather than replacing it.
+
+```nix
+# workspaces/my-workspace/default.nix
+{ pkgs, workspaces, utils }:
+
+let
+  # Import the upstream workspace module and extract its config block.
+  upstream = import (inputs.alice-module + "/examples/sample-workspace/default.nix")
+               { inherit pkgs workspaces utils; };
+
+  base = upstream.workspaces."sample-workspace";
+in
+{
+  workspaces."my-workspace" = base // {
+
+    # Override individual files; all other upstream files are preserved.
+    workspace.file = base.workspace.file // {
+      "README.md" = {
+        dontIgnore = true;
+        text = "# my-workspace\n";
+      };
+      "my-extra-file.md" = "Extra content.\n";
+    };
+
+    # Add extra rules on top of the upstream set.
+    workspace.bob.rules = base.workspace.bob.rules // {
+      "my-rules.md" = { source = utils.root "rules/my-rules.md"; };
+    };
+
+    # Add packages without dropping the upstream ones.
+    workspace.packages = base.workspace.packages ++ [ pkgs.fd ];
+  };
+}
+```
+
+A working implementation of this pattern is in
+[`examples/workspace.nix`](examples/workspace.nix).
 
 ---
 
