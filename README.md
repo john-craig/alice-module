@@ -210,10 +210,11 @@ directory.
 
 ### `fileEntry` submodule
 
-| Field | Type | Description |
-|---|---|---|
-| `text` | `lines` or `null` | Inline text content. |
-| `source` | `path` or `null` | Nix path (file or directory) to copy into the target. |
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `text` | `lines` or `null` | `null` | Inline text content. |
+| `source` | `path` or `null` | `null` | Nix path (file or directory) to copy into the target. |
+| `dontIgnore` | `bool` | `false` | When `true`, this file is **not** appended to the workspace `.gitignore`. By default every file written by the module is added to `.gitignore`. |
 
 A plain string is automatically coerced to `{ text = "…"; }`.
 

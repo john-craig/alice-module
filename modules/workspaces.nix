@@ -66,6 +66,14 @@ let
         default     = null;
         description = "Nix path to copy verbatim into the target directory.";
       };
+      dontIgnore = lib.mkOption {
+        type        = lib.types.bool;
+        default     = false;
+        description = ''
+          When true, this file is not added to the workspace `.gitignore`.
+          By default every file written by the module is appended to `.gitignore`.
+        '';
+      };
     };
   };
 
@@ -250,6 +258,26 @@ name: moduleFile:
       lib.mapAttrs' (k: v: lib.nameValuePair ".bob/skills/${k}" v) cfg.bob.skills //
       mcpJsonEntry;
 
+    # Paths to add to .gitignore — everything that does not set dontIgnore = true.
+    gitignorePaths = lib.filter (p: !(allFiles.${p}.dontIgnore or false))
+                       (lib.attrNames allFiles);
+
+    gitignoreStatement =
+      if gitignorePaths == [] then ""
+      else
+        let
+          addLines = lib.concatStringsSep "\n" (
+            map (p: ''grep -qxF ${lib.escapeShellArg p} "$GITIGNORE" || echo ${lib.escapeShellArg p} >> "$GITIGNORE"'')
+              gitignorePaths
+          );
+        in
+        ''
+          GITIGNORE="$TARGET_DIR/.gitignore"
+          touch "$GITIGNORE"
+          ${addLines}
+          echo "  updated .gitignore"
+        '';
+
     writeStatements = lib.concatStringsSep "\n" (
       lib.mapAttrsToList (filePath: entry:
         let stored = toStorePath filePath entry; in
@@ -316,6 +344,7 @@ name: moduleFile:
       echo "Setting up workspace '${name}' in $TARGET_DIR ..."
       ${writeStatements}
       ${linkStatements}
+      ${gitignoreStatement}
       echo "Done."
     '';
   }
