@@ -92,6 +92,21 @@
         in
         {
           # ------------------------------------------------------------------
+          # alice — the imperative workspace provisioning CLI.
+          #
+          # Inspired by home-manager / nixos-rebuild.  Accepts a workspace.nix
+          # path and a target directory at runtime and provisions on the spot.
+          #
+          # Run with:  nix run .#alice -- switch --workspace ./workspace.nix --target .
+          # ------------------------------------------------------------------
+          alice = pkgs.callPackage ./packages/alice {
+            inherit pkgs;
+            # Capture the store path of the engine module at build time so the
+            # runtime script can reference it without needing the source tree.
+            workspacesModule = ./modules/workspaces.nix;
+          };
+
+          # ------------------------------------------------------------------
           # Sample package
           # ------------------------------------------------------------------
           hello = pkgs.callPackage ./packages/hello { inherit pkgs; };
@@ -220,6 +235,12 @@
       );
 
       apps = forEachSystem (system: {
+        # The alice CLI — imperative workspace provisioning.
+        alice = {
+          type    = "app";
+          program = "${self.packages.${system}.alice}/bin/alice";
+        };
+
         # The sample workspace app — the canonical starting point for new consumers.
         workspace-sample-workspace = {
           type    = "app";

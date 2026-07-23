@@ -1,14 +1,51 @@
 # alice-module
 
 **Alice Nix Module** — a Nix flake that provides a declarative harness for
-setting up Bob workspaces.  A downstream consumer adds this flake as an input
-and uses `lib.mkWorkspace` (or `lib.mkWorkspaceIn`) to build
-`writeShellApplication` derivations that provision a target directory with
-rules, skills, MCP-server registrations, and tool symlinks.
+setting up Bob workspaces.  It ships two complementary usage modes:
+
+| Mode | How | When to use |
+|---|---|---|
+| **`alice switch`** | Runtime CLI — point it at any `workspace.nix` and a target directory | One-off provisioning; no flake boilerplate needed |
+| **`lib.mkWorkspace`** | Build-time library — declare workspaces as flake outputs | Reproducible, version-pinned workspace derivations in your own flake |
 
 ---
 
-## Quick start
+## Quick start — `alice switch`
+
+The fastest path.  No downstream flake required.
+
+```bash
+# Provision the current directory from a local workspace.nix
+nix run github:your-org/alice-module#alice -- switch \
+  --workspace ./workspace.nix \
+  --target .
+```
+
+The workspace name is auto-detected from the first key in `workspaces`.
+Pass `--name` to be explicit when a file defines multiple workspaces.
+
+```bash
+alice switch \
+  --workspace ~/projects/my-ws/workspace.nix \
+  --target    ~/projects/my-ws \
+  --name      my-workspace
+```
+
+### `alice switch` options
+
+| Flag | Short | Description |
+|---|---|---|
+| `--workspace <file>` | `-w` | Path to the `workspace.nix` module file **(required)** |
+| `--target <dir>` | `-t` | Target directory to provision **(required)** |
+| `--name <name>` | `-n` | Workspace name key. Defaults to the first key in `workspaces`. |
+| `--system <sys>` | `-s` | Nix system string. Defaults to `builtins.currentSystem`. |
+| `--help` | `-h` | Show usage. |
+
+---
+
+## Quick start — library (downstream flake)
+
+For reproducible, version-pinned workspaces declared inside your own flake.
 
 ```nix
 # flake.nix (downstream consumer)
@@ -47,19 +84,32 @@ file declared in its configuration.
 ## Repository layout
 
 ```
-flake.nix                        Flake definition; exposes lib and packages
+flake.nix                        Flake definition; exposes lib, packages, and apps
 modules/
   workspaces.nix                 Core mkWorkspace engine
+packages/
+  alice/                         The alice CLI (alice switch)
+  hello/                         Sample package (hello-world shell script)
 examples/
   sample-workspace/default.nix   Full example workspace (all fields demonstrated)
   workspace.nix                  Extended workspace (shows override/extend pattern)
-packages/
-  hello/                         Sample package (hello-world shell script)
 ```
 
 ---
 
 ## Flake outputs
+
+### `apps.<system>.alice`
+
+The `alice` CLI.  Accepts a `workspace.nix` file and a target directory at
+runtime and provisions the directory on the spot.
+
+```bash
+nix run .#alice -- switch --workspace ./workspace.nix --target .
+```
+
+See [Quick start — `alice switch`](#quick-start--alice-switch) for the full
+option reference.
 
 ### `lib.mkWorkspace pkgs`
 
@@ -90,6 +140,10 @@ mkWs = inputs.alice-module.lib.mkWorkspaceIn pkgs self;
 A built-in example workspace that demonstrates every supported option —
 `workspace.file`, `workspace.bob.rules`, `workspace.bob.skills`,
 `workspace.bob.mcpServers`, and `workspace.packages`.
+
+```bash
+nix run .#workspace-sample-workspace -- /path/to/target-dir
+```
 
 ### `packages.<system>.workspace-extended-workspace`
 
@@ -145,10 +199,17 @@ A workspace module is a Nix function with the signature
 }
 ```
 
-Register the workspace in your downstream flake:
+To use with `alice switch`, point the CLI at this file directly:
+
+```bash
+alice switch --workspace ./workspaces/my-workspace/default.nix --target .
+```
+
+To expose it as a named flake package, register it in your downstream flake:
 
 ```nix
-packages.${system}.workspace-my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
+packages.${system}.workspace-my-workspace =
+  mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
 ```
 
 ---
@@ -304,6 +365,31 @@ in {
   workspace.bob.skills."external".source = utils.repo external "skills";
 }
 ```
+
+---
+
+## How `alice switch` works
+
+`alice` is a standard Nix package (`packages.<system>.alice`) whose shell
+script has two Nix expression files baked in at build time:
+
+1. **Name detection** — `nix eval --impure --raw --expr` imports the
+   user-supplied `workspace.nix` with a minimal stub environment and returns
+   the first key from `workspaces`.  The absolute file path is spliced as a
+   bare Nix path literal (valid unquoted Nix syntax), so no shell variable
+   ever appears inside a Nix expression string.
+
+2. **Workspace build** — `nix build --impure -f alice-build-workspace.nix`
+   imports the engine (`modules/workspaces.nix`, whose store path is baked in
+   at build time) and calls `mkWorkspace` against the user's file.  All
+   variable data (`workspaceFile`, `wsName`, `system`) is passed via
+   `--arg` / `--argstr`, keeping the expression file itself static.
+
+3. **Provision** — the resulting `workspace-<name>` script is executed against
+   the target directory.
+
+This is the same evaluation model as `home-manager switch`: the host's Nix
+daemon does the building; the CLI is a thin driver that orchestrates it.
 
 ---
 
