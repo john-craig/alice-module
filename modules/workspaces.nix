@@ -3,18 +3,34 @@
 # Core workspace-building machinery.
 #
 # This module is imported by flake.nix and re-exported as
-# `self.lib.mkWorkspace` so that downstream flake consumers can call it
-# directly.
+# `self.lib.mkWorkspace` / `self.lib.mkWorkspaceFromFile` so that downstream
+# flake consumers can call it directly.
 #
-# The public API is a single function:
+# ── Public API ───────────────────────────────────────────────────────────────
 #
 #   mkWorkspace pkgs name moduleFile
 #
-# `pkgs`       – a nixpkgs package set (import nixpkgs { inherit system; })
-# `name`       – the workspace name string, e.g. "my-workspace"
-# `moduleFile` – a Nix path to the workspace module, e.g. ./workspaces/my-workspace/default.nix
+#     Build a workspace derivation from a module file that uses the full
+#     { pkgs, workspaces, utils } calling convention.
 #
-# A workspace module is a function of the form:
+#     `pkgs`       – a nixpkgs package set
+#     `name`       – the workspace name string, e.g. "my-workspace"
+#     `moduleFile` – a Nix path to the workspace module
+#
+#   mkWorkspaceFromFile pkgs workspaceNixPath
+#
+#     Build a workspace derivation from a consuming repository's
+#     .alice/workspace.nix.  The file may use either the full
+#     { pkgs, workspaces, utils } convention OR the simplified
+#     { pkgs, utils, ... } convention shown below.
+#
+#     `pkgs`              – a nixpkgs package set
+#     `workspaceNixPath`  – an absolute path string to the workspace.nix file
+#                           (typically mounted at runtime inside the container)
+#
+# ── Workspace module conventions ─────────────────────────────────────────────
+#
+# Full convention (original; preserves full backwards compatibility):
 #
 #   { pkgs, workspaces, utils }:
 #   {
@@ -29,6 +45,21 @@
 #       };
 #       workspace.packages = [ pkgs.ripgrep ];
 #     };
+#   }
+#
+# Simplified convention (for consuming repositories):
+#
+#   { pkgs, utils, ... }:
+#   {
+#     name = "my-project";           # workspace name (default: "workspace")
+#
+#     workspace.file."README-alice.txt".text = ''
+#       Provisioned by Alice.
+#     '';
+#
+#     workspace.bob.rules."my-rules.md" = "# My rules\n";
+#
+#     workspace.packages = [ pkgs.git pkgs.curl ];
 #   }
 #
 # `utils.root relPath`       resolves a path relative to the flake root.
@@ -195,127 +226,213 @@ let
   # `utils.repo fetched path`  →  <fetched>/<path>        (a Nix path)
   # ---------------------------------------------------------------------------
   utils = {
-    root  = relPath:          flakeRoot + "/${relPath}";
-    repo  = repo: relPath:   repo + "/${relPath}";
+    root  = relPath:        flakeRoot + "/${relPath}";
+    repo  = repo: relPath: repo + "/${relPath}";
   };
+
+  # ---------------------------------------------------------------------------
+  # buildDerivation — shared derivation builder used by both mkWorkspace and
+  # mkWorkspaceFromFile.
+  #
+  # Takes the evaluated workspace config and the name, returns the
+  # writeShellApplication derivation.
+  # ---------------------------------------------------------------------------
+  buildDerivation = name: cfg:
+    let
+      toStorePath = destName: entry:
+        if entry.source != null then entry.source
+        else pkgs.writeText destName entry.text;
+
+      mcpJsonEntry = lib.optionalAttrs (cfg.bob.mcpServers != {}) {
+        ".bob/mcp.json" = {
+          text   = null;
+          source = pkgs.writeText "mcp.json" (builtins.toJSON {
+            mcpServers = lib.mapAttrs (_: srv:
+              if srv.type != null then
+                { type = srv.type; url = srv.url; }
+                // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; }
+              else
+                { command = srv.command; }
+                // lib.optionalAttrs (srv.args        != []) { args        = srv.args; }
+                // lib.optionalAttrs (srv.env         != {}) { env         = srv.env; }
+                // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; }
+            ) cfg.bob.mcpServers;
+          });
+        };
+      };
+
+      allFiles =
+        cfg.file //
+        lib.mapAttrs' (k: v: lib.nameValuePair ".bob/rules/${k}"  v) cfg.bob.rules  //
+        lib.mapAttrs' (k: v: lib.nameValuePair ".bob/skills/${k}" v) cfg.bob.skills //
+        mcpJsonEntry;
+
+      writeStatements = lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (filePath: entry:
+          let stored = toStorePath filePath entry; in
+          ''
+            if [ -d "${stored}" ]; then
+              mkdir -p "$TARGET_DIR/${filePath}"
+              cp -r "${stored}/." "$TARGET_DIR/${filePath}/"
+              chmod -R u+w "$TARGET_DIR/${filePath}/" || true
+              echo "  copied directory ${filePath}"
+            else
+              mkdir -p "$(dirname "$TARGET_DIR/${filePath}")"
+              cp "${stored}" "$TARGET_DIR/${filePath}"
+              chmod u+w "$TARGET_DIR/${filePath}" || true
+              echo "  wrote ${filePath}"
+            fi
+          ''
+        ) allFiles
+      );
+
+      linkStatements = lib.concatStringsSep "\n" (
+        map (pkg:
+          let binDir = "${lib.getBin pkg}/bin"; in
+          ''
+            if [ -d "${binDir}" ]; then
+              mkdir -p "$TARGET_DIR/.local/bin"
+              for bin in "${binDir}"/*; do
+                [ -e "$bin" ] || continue
+                ln -sf "$bin" "$TARGET_DIR/.local/bin/$(basename "$bin")"
+                echo "  linked $(basename "$bin")"
+              done
+            fi
+          ''
+        ) cfg.packages
+      );
+    in
+    pkgs.writeShellApplication {
+      name          = "workspace-${name}";
+      runtimeInputs = [ pkgs.coreutils ];
+
+      text = ''
+        set -euo pipefail
+
+        usage() {
+          cat <<'USAGE'
+        Usage: workspace-${name} <directory>
+
+        Sets up the "${name}" workspace in the given directory.
+
+        Arguments:
+          directory   Path to the target directory (must already exist)
+        USAGE
+        }
+
+        if [ "$#" -ne 1 ]; then
+          echo "Error: exactly one argument (directory) is required." >&2
+          usage >&2
+          exit 1
+        fi
+
+        TARGET_DIR="$1"
+
+        if [ ! -d "$TARGET_DIR" ]; then
+          echo "Error: directory does not exist: $TARGET_DIR" >&2
+          exit 1
+        fi
+
+        echo "Setting up workspace '${name}' in $TARGET_DIR ..."
+        ${writeStatements}
+        ${linkStatements}
+        echo "Done."
+      '';
+    };
+
+  # ---------------------------------------------------------------------------
+  # evalConfig — evaluate a raw config attrset through the NixOS module system.
+  # ---------------------------------------------------------------------------
+  evalConfig = configBlock:
+    let
+      evaluated = lib.evalModules {
+        modules = [
+          workspaceOptions
+          { config = configBlock; }
+        ];
+      };
+    in
+    evaluated.config.workspace;
+
+  # ---------------------------------------------------------------------------
+  # normaliseConsumerModule — accept either the full { pkgs, workspaces, utils }
+  # convention or the simplified { pkgs, utils, ... } convention used by
+  # consuming repositories.
+  #
+  # The simplified form returns an attrset that:
+  #   - may have a `name` key (string; default "workspace")
+  #   - has `workspace.*` keys at the top level instead of nested under
+  #     `workspaces."<name>"`
+  #
+  # Both forms are normalised to { name, configBlock } so that the rest of
+  # the engine is convention-agnostic.
+  # ---------------------------------------------------------------------------
+  normaliseConsumerModule = moduleFile:
+    let
+      # Import the file, passing both calling conventions' arguments.  The
+      # simplified form uses `{ pkgs, utils, ... }` so it ignores `workspaces`.
+      raw = (import moduleFile) { inherit pkgs utils; workspaces = {}; };
+
+      # Detect which convention was used:
+      # Full convention   → raw has a `workspaces` key at the top level.
+      # Simplified form   → raw has `workspace` (or `name`) at the top level.
+      isFullConvention = raw ? workspaces;
+    in
+    if isFullConvention then
+      # ── Full convention ──────────────────────────────────────────────────
+      # raw = { workspaces."<name>" = { workspace.file = ...; ... }; }
+      # Pick the first (and typically only) workspace name.
+      let
+        names = builtins.attrNames raw.workspaces;
+        name  = builtins.head names;
+      in
+      { inherit name; configBlock = raw.workspaces.${name}; }
+    else
+      # ── Simplified convention ─────────────────────────────────────────────
+      # raw = { name = "..."; workspace.file = ...; workspace.packages = ...; }
+      let
+        name = raw.name or "workspace";
+        # Strip the `name` key; everything else is the config block.
+        configBlock = builtins.removeAttrs raw [ "name" ];
+      in
+      { inherit name; inherit configBlock; };
 
 in
 
 # ---------------------------------------------------------------------------
-# mkWorkspace — public entry point
+# Public API — returned as an attrset so flake.nix can expose individual
+# functions without needing to import this file multiple times.
 #
-# Returns a `writeShellApplication` derivation named `workspace-<name>` that,
-# when run with a target directory, provisions that directory according to the
-# options declared in `moduleFile`.
+#   engine.mkWorkspace name moduleFile
+#     Original entry point; expects the full { pkgs, workspaces, utils }
+#     calling convention and an explicit workspace name.
+#
+#   engine.mkWorkspaceFromFile workspaceNixPath
+#     Runtime entry point for repository-driven provisioning.
+#     Accepts an absolute path *string* (not a Nix path literal) so it can
+#     handle files that are only available inside the container at runtime.
+#     Uses builtins.path to copy the file into the Nix store before evaluation.
+#     Supports both calling conventions.
 # ---------------------------------------------------------------------------
-name: moduleFile:
-  let
-    returned    = (import moduleFile) { inherit pkgs utils; workspaces = {}; };
-    configBlock = returned.workspaces.${name};
+{
+  mkWorkspace = name: moduleFile:
+    let
+      returned    = (import moduleFile) { inherit pkgs utils; workspaces = {}; };
+      configBlock = returned.workspaces.${name};
+      cfg         = evalConfig configBlock;
+    in
+    buildDerivation name cfg;
 
-    evaluated = lib.evalModules {
-      modules = [
-        workspaceOptions
-        { config = configBlock; }
-      ];
-    };
-
-    cfg = evaluated.config.workspace;
-
-    toStorePath = destName: entry:
-      if entry.source != null then entry.source
-      else pkgs.writeText destName entry.text;
-
-    mcpJsonEntry = lib.optionalAttrs (cfg.bob.mcpServers != {}) {
-      ".bob/mcp.json" = {
-        text   = null;
-        source = pkgs.writeText "mcp.json" (builtins.toJSON {
-          mcpServers = lib.mapAttrs (_: srv:
-            if srv.type != null then
-              { type = srv.type; url = srv.url; }
-              // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; }
-            else
-              { command = srv.command; }
-              // lib.optionalAttrs (srv.args        != []) { args        = srv.args; }
-              // lib.optionalAttrs (srv.env         != {}) { env         = srv.env; }
-              // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; }
-          ) cfg.bob.mcpServers;
-        });
+  mkWorkspaceFromFile = workspaceNixPath:
+    let
+      # builtins.path copies the file into the Nix store and returns a store
+      # path that can be used as a Nix path literal in subsequent imports.
+      moduleFile = builtins.path {
+        path = workspaceNixPath;
+        name = "workspace.nix";
       };
-    };
-
-    allFiles =
-      cfg.file //
-      lib.mapAttrs' (k: v: lib.nameValuePair ".bob/rules/${k}"  v) cfg.bob.rules  //
-      lib.mapAttrs' (k: v: lib.nameValuePair ".bob/skills/${k}" v) cfg.bob.skills //
-      mcpJsonEntry;
-
-    writeStatements = lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (filePath: entry:
-        let stored = toStorePath filePath entry; in
-        ''
-          if [ -d "${stored}" ]; then
-            mkdir -p "$TARGET_DIR/${filePath}"
-            cp -r --no-preserve=mode "${stored}/." "$TARGET_DIR/${filePath}/"
-            echo "  copied directory ${filePath}"
-          else
-            install -D --mode=0644 "${stored}" "$TARGET_DIR/${filePath}"
-            echo "  wrote ${filePath}"
-          fi
-        ''
-      ) allFiles
-    );
-
-    linkStatements = lib.concatStringsSep "\n" (
-      map (pkg:
-        let binDir = "${lib.getBin pkg}/bin"; in
-        ''
-          if [ -d "${binDir}" ]; then
-            mkdir -p "$TARGET_DIR/.local/bin"
-            for bin in "${binDir}"/*; do
-              [ -e "$bin" ] || continue
-              ln -sf "$bin" "$TARGET_DIR/.local/bin/$(basename "$bin")"
-              echo "  linked $(basename "$bin")"
-            done
-          fi
-        ''
-      ) cfg.packages
-    );
-  in
-  pkgs.writeShellApplication {
-    name          = "workspace-${name}";
-    runtimeInputs = [ pkgs.coreutils ];
-
-    text = ''
-      set -euo pipefail
-
-      usage() {
-        cat <<'USAGE'
-      Usage: workspace-${name} <directory>
-
-      Sets up the "${name}" workspace in the given directory.
-
-      Arguments:
-        directory   Path to the target directory (must already exist)
-      USAGE
-      }
-
-      if [ "$#" -ne 1 ]; then
-        echo "Error: exactly one argument (directory) is required." >&2
-        usage >&2
-        exit 1
-      fi
-
-      TARGET_DIR="$1"
-
-      if [ ! -d "$TARGET_DIR" ]; then
-        echo "Error: directory does not exist: $TARGET_DIR" >&2
-        exit 1
-      fi
-
-      echo "Setting up workspace '${name}' in $TARGET_DIR ..."
-      ${writeStatements}
-      ${linkStatements}
-      echo "Done."
-    '';
-  }
+      normalised = normaliseConsumerModule moduleFile;
+      cfg        = evalConfig normalised.configBlock;
+    in
+    buildDerivation normalised.name cfg;
+}

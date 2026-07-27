@@ -22,59 +22,64 @@
           {}
           systems;
 
+      # Import the workspace engine for a given pkgs + flakeRoot combination.
+      # The engine attrset exposes { mkWorkspace, mkWorkspaceFromFile }.
+      mkEngine = pkgs: flakeRoot:
+        import ./modules/workspaces.nix { inherit pkgs flakeRoot; };
+
     in
     {
       # -----------------------------------------------------------------------
-      # lib.mkWorkspace
+      # lib.mkWorkspace pkgs
       #
-      # Build a workspace derivation from a module file.
+      # Returns a curried function  name → moduleFile → derivation.
       #
-      # Usage:
+      # `utils.root` inside the module resolves relative to *this* flake's root.
+      # Use lib.mkWorkspaceIn when you want it to resolve relative to a
+      # different repository.
       #
-      #   let
-      #     alice = inputs.alice-module;
-      #     pkgs  = import inputs.nixpkgs { inherit system; };
-      #     mkWs  = alice.lib.mkWorkspace pkgs;
-      #   in {
-      #     packages.my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
-      #   }
+      # Usage (downstream flake):
       #
-      # The module file must follow the convention described in
-      # modules/workspaces.nix — a function of { pkgs, workspaces, utils } that
-      # returns { workspaces."<name>" = { workspace = ...; }; }.
-      #
-      # `utils.root relPath` resolves a path relative to the *calling* flake's
-      # root.  Pass `flakeRoot` (the second arg to mkWorkspaceIn) to customise
-      # this; if omitted it defaults to the root of *this* flake (useful for
-      # the built-in example workspaces).
+      #   mkWs = inputs.alice-module.lib.mkWorkspace pkgs;
+      #   packages.my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
       # -----------------------------------------------------------------------
       lib.mkWorkspace = pkgs:
-        let
-          # When consumers call this from their own flake they will import
-          # modules/workspaces.nix with their own flakeRoot.  The default
-          # here points at this flake's own root so the built-in example
-          # workspaces resolve correctly.
-          engine = import ./modules/workspaces.nix {
-            inherit pkgs;
-            flakeRoot = self;
-          };
-        in
-        engine;
+        (mkEngine pkgs self).mkWorkspace;
 
       # -----------------------------------------------------------------------
-      # lib.mkWorkspaceIn
+      # lib.mkWorkspaceIn pkgs flakeRoot
       #
-      # Like lib.mkWorkspace but lets the caller supply a custom flakeRoot
-      # so that utils.root resolves relative to their own repository.
+      # Like lib.mkWorkspace but with an explicit flake root so that
+      # utils.root resolves relative to the caller's repository.
       #
-      # Usage (in a downstream flake):
+      # Usage (downstream flake):
       #
-      #   packages.my-workspace =
-      #     inputs.alice-module.lib.mkWorkspaceIn pkgs myFlake.self
-      #       "my-workspace" ./workspaces/my-workspace/default.nix;
+      #   mkWs = inputs.alice-module.lib.mkWorkspaceIn pkgs self;
+      #   packages.my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
       # -----------------------------------------------------------------------
       lib.mkWorkspaceIn = pkgs: flakeRoot:
-        import ./modules/workspaces.nix { inherit pkgs flakeRoot; };
+        (mkEngine pkgs flakeRoot).mkWorkspace;
+
+      # -----------------------------------------------------------------------
+      # lib.mkWorkspaceFromFile pkgs
+      #
+      # Returns a function  workspaceNixPath → derivation.
+      #
+      # Designed for runtime use inside the Docker container: accepts an
+      # absolute path string to the consuming repository's .alice/workspace.nix
+      # (available after bind-mounting) and builds a workspace derivation from
+      # it without requiring the path to be a Nix path literal.
+      #
+      # Supports both the full { pkgs, workspaces, utils } convention and the
+      # simplified { pkgs, utils, ... } consumer convention.
+      #
+      # Usage (generated runtime flake in entrypoint.sh):
+      #
+      #   mkWs = alice-module.lib.mkWorkspaceFromFile pkgs;
+      #   packages.${system}.workspace = mkWs "/workspace/source/.alice/workspace.nix";
+      # -----------------------------------------------------------------------
+      lib.mkWorkspaceFromFile = pkgs:
+        (mkEngine pkgs self).mkWorkspaceFromFile;
 
       # -----------------------------------------------------------------------
       # Per-system outputs
@@ -86,7 +91,8 @@
             config.allowUnfree = true;
           };
 
-          mkWs = self.lib.mkWorkspace pkgs;
+          engine = mkEngine pkgs self;
+          mkWs   = engine.mkWorkspace;
         in
         {
           # ------------------------------------------------------------------
