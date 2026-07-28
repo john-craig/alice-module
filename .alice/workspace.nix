@@ -23,7 +23,7 @@ let
   # Update `rev` whenever you want to pick up new shared workspace definitions.
   # ---------------------------------------------------------------------------
   alice-workspaces = builtins.fetchGit {
-    url = "git@github.com:john-craig/alice-workspaces.git";
+    url = "ssh://git@github.com/john-craig/alice-workspaces.git";
     ref = "main";
   };
 

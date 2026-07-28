@@ -8,6 +8,30 @@ rules, skills, MCP-server registrations, and tool symlinks.
 
 ---
 
+## Architecture
+
+The Alice framework is split across three repositories with clearly separated
+responsibilities:
+
+| Repository | Purpose |
+|---|---|
+| **[alice-module](https://github.com/john-craig/alice-module)** (this repo) | Reusable declarative workspace-provisioning framework |
+| **[alice-workspaces](https://github.com/john-craig/alice-workspaces)** | Concrete workspace definitions built using alice-module |
+| **[alice-image](https://github.com/john-craig/alice-image)** | Dockerfile, entrypoint, build logic and runtime environment |
+
+Dependency flow:
+
+```
+alice-module
+     │
+     ├──────────────► alice-image
+     │
+     ▼
+alice-workspaces ───► alice-image
+```
+
+---
+
 ## Repository layout
 
 ```
@@ -18,8 +42,8 @@ workspaces/
   blank/default.nix              Minimal built-in example workspace
 .alice/
   workspace.nix                  Example consumer workspace configuration
-packages/
-  hello/                         Sample package (hello-world shell script)
+docs/
+  TESTING.md                     Test cases and validation commands
 ```
 
 ---
@@ -60,160 +84,13 @@ file declared in its configuration.
 
 ---
 
-## Docker usage — repository-driven provisioning
+## Docker image
 
-The repository ships a `Dockerfile` that provisions a workspace at **runtime**
-from the consuming repository's `.alice/workspace.nix` — no workspace
-definition is baked into the image.
-
-### Prerequisites
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker
-  Engine on Linux) installed and the daemon running.
-- No Nix installation required on the host.
-- A `.alice/workspace.nix` file in the consuming repository root.
-
-### 1. Create `.alice/workspace.nix` in your repository
-
-```nix
-# <your-repo>/.alice/workspace.nix
-{ pkgs, utils, ... }:
-
-{
-  name = "my-project";
-
-  workspace.file."README-alice.txt".text = ''
-    This workspace was generated from the consuming repository.
-  '';
-
-  workspace.packages = [ pkgs.git pkgs.curl ];
-}
-```
-
-### 2. Build the Docker image (once)
-
-```bash
-docker build -t alice-module:local .
-```
-
-`nix flake check` is executed during the build and all flake inputs (nixpkgs)
-are pre-warmed into the image's Nix store — runtime builds are fast and do not
-require network access for base packages.
-
-### 3. Run the container
-
-```bash
-mkdir -p generated-workspace
-
-docker run --rm \
-  -v "$PWD:/workspace/source:ro" \
-  -v "$PWD/generated-workspace:/workspace/output" \
-  -v "$HOME/.ssh:/root/.ssh:ro" \
-  -v "$SSH_AUTH_SOCK:/ssh-agent" \
-  -e SSH_AUTH_SOCK=/ssh-agent \
-  alice-module:local
-```
-
-**What happens:**
-
-| Step | Detail |
-|---|---|
-| `--rm` | Container is removed automatically when it exits |
-| `-v "$PWD:/workspace/source:ro"` | Bind-mounts your repository root (read-only) so `.alice/workspace.nix` is visible inside the container |
-| `-v "$PWD/generated-workspace:/workspace/output"` | Bind-mounts the output directory (read-write) |
-| `-v "$HOME/.ssh:/root/.ssh:ro"` | Mounts SSH keys so the container can authenticate with IBM GitHub |
-| `-v "$SSH_AUTH_SOCK:/ssh-agent"` | Forwards the SSH agent socket into the container |
-| The entrypoint | Reads `/workspace/source/.alice/workspace.nix`, runs `nix build` on it, then executes the result against `/workspace/output` |
-| After exit | Files written inside `/workspace/output` remain on your host |
-
-**Expected output:**
-
-```
-Alice: reading workspace configuration from:
-  /workspace/source/.alice/workspace.nix
-
-Alice: building workspace (this may take a moment on first run)...
-
-Alice: provisioning output directory:
-  /workspace/output
-
-Setting up workspace 'my-project' in /workspace/output ...
-  wrote README-alice.txt
-Done.
-```
-
-### Environment variable overrides
-
-| Variable | Default | Description |
-|---|---|---|
-| `ALICE_SOURCE_DIR` | `/workspace/source` | Path to the consuming repository root inside the container |
-| `ALICE_OUTPUT_DIR` | `/workspace/output` | Path to the directory to provision inside the container |
-| `ALICE_WORKSPACE_FILE` | `$ALICE_SOURCE_DIR/.alice/workspace.nix` | Explicit path to the workspace configuration file |
-
-### Troubleshooting
-
-#### SSH authentication failure
-
-```
-Host key verification failed.
-fatal: Could not read from remote repository.
-```
-
-The container has no SSH keys to authenticate with IBM GitHub. Add the SSH mounts:
-
-```bash
-docker run --rm \
-  -v "$PWD:/workspace/source:ro" \
-  -v "$PWD/generated-workspace:/workspace/output" \
-  -v "$HOME/.ssh:/root/.ssh:ro" \
-  -v "$SSH_AUTH_SOCK:/ssh-agent" \
-  -e SSH_AUTH_SOCK=/ssh-agent \
-  alice-module:local
-```
-
-Also make sure your SSH key is loaded in the agent:
-
-```bash
-ssh-add -l          # check loaded keys
-ssh-add ~/.ssh/id_rsa   # load if empty
-ssh -T git@github.com  # verify access
-```
-
-#### `.alice/workspace.nix` not found
-
-```
-ERROR: Alice workspace configuration was not found at:
-  /workspace/source/.alice/workspace.nix
-```
-
-Make sure your repository contains `.alice/workspace.nix` and that you mounted
-the repository root (not a subdirectory):
-
-```bash
-docker run --rm \
-  -v "$PWD:/workspace/source:ro" \     # ← must be the repo root
-  -v "$PWD/generated-workspace:/workspace/output" \
-  alice-module:local
-```
-
-#### Output directory does not exist
-
-```
-ERROR: Output directory does not exist: /workspace/output
-```
-
-Create the host directory before running the container:
-
-```bash
-mkdir -p generated-workspace
-docker run --rm \
-  -v "$PWD:/workspace/source:ro" \
-  -v "$PWD/generated-workspace:/workspace/output" \
-  -v "$HOME/.ssh:/root/.ssh:ro" \
-  -v "$SSH_AUTH_SOCK:/ssh-agent" \
-  -e SSH_AUTH_SOCK=/ssh-agent \
-  alice-module:local
-```
+Docker image build and runtime are managed in the separate
+[`alice-image`](https://github.com/john-craig/alice-image) repository.
+See [`alice-image/README.md`](https://github.com/john-craig/alice-image/blob/main/README.md)
+for build instructions, run commands, environment variable reference,
+and troubleshooting.
 
 ---
 
@@ -318,11 +195,6 @@ packages.${system}.workspace = mkWs "/workspace/source/.alice/workspace.nix";
 
 A built-in demo workspace that writes a single `hello.txt` to the target
 directory.
-
-### `packages.<system>.hello`
-
-A sample shell-script package included as a starting point for adding real
-packages to the flake.
 
 ---
 

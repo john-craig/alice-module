@@ -96,11 +96,6 @@
         in
         {
           # ------------------------------------------------------------------
-          # Sample package
-          # ------------------------------------------------------------------
-          hello = pkgs.callPackage ./packages/hello { inherit pkgs; };
-
-          # ------------------------------------------------------------------
           # Example workspace: blank
           #
           # A minimal workspace that writes a single hello.txt file.
