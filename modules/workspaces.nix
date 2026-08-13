@@ -111,7 +111,7 @@ let
   workspaceOptions = {
     options.workspace = {
 
-      require.executables = lib.mkOption {
+      assertExecutables = lib.mkOption {
         type        = lib.types.listOf lib.types.str;
         default     = [];
         description = ''
@@ -125,7 +125,8 @@ let
 
           If no executable list file is provided (ALICE_HOST_EXECUTABLES is
           unset) and this list is non-empty, provisioning fails — unless
-          ALICE_SKIP_EXECUTABLE_CHECK=1 is set in the environment.
+          alice-shell is run with --skip-executable-check, which sets
+          ALICE_SKIP_EXECUTABLE_CHECK=1 inside the container.
 
           Example: assert that the user has docker and git installed on the host.
         '';
@@ -265,20 +266,21 @@ let
         else pkgs.writeText destName entry.text;
 
       # -----------------------------------------------------------------------
-      # requireExecutablesCheck
+      # assertExecutablesCheck
       #
       # A shell fragment baked into the workspace script.  At run-time it:
-      #   1. If workspace.require.executables is empty, does nothing.
+      #   1. If workspace.assertExecutables is empty, does nothing.
       #   2. If ALICE_SKIP_EXECUTABLE_CHECK=1, prints a notice and skips.
+      #      (Set by alice-shell --skip-executable-check; not a user env var.)
       #   3. If ALICE_HOST_EXECUTABLES is unset, fails with guidance.
       #   4. Reads the executable list file and fails for any name not found.
       #
       # The list of required names is embedded at build time as a Nix string
       # so there is no run-time dependency on Nix or alice-module.
       # -----------------------------------------------------------------------
-      requiredExecs = cfg.require.executables;
+      requiredExecs = cfg.assertExecutables;
 
-      requireExecutablesCheck =
+      assertExecutablesCheck =
         if requiredExecs == [] then ""
         else
           let
@@ -288,11 +290,11 @@ let
             quotedNames = lib.concatMapStringsSep " " (n: ''"${n}"'') requiredExecs;
           in
           ''
-            # ── workspace.require.executables check ───────────────────────────
+            # ── workspace.assertExecutables check ─────────────────────────────
             _REQUIRED_EXECS=(${quotedNames})
 
             if [ "''${ALICE_SKIP_EXECUTABLE_CHECK:-0}" = "1" ]; then
-              echo "  [skip] host executable check skipped (ALICE_SKIP_EXECUTABLE_CHECK=1)"
+              echo "  [skip] host executable check skipped (--skip-executable-check)"
             elif [ -z "''${ALICE_HOST_EXECUTABLES:-}" ]; then
               echo "" >&2
               echo "Error: workspace '${name}' requires these host executables:" >&2
@@ -302,7 +304,7 @@ let
               echo "" >&2
               echo "No host executable list was provided (ALICE_HOST_EXECUTABLES is unset)." >&2
               echo "Run alice-shell to provision — it automatically scans the host PATH." >&2
-              echo "To skip this check: set ALICE_SKIP_EXECUTABLE_CHECK=1." >&2
+              echo "To skip this check: pass --skip-executable-check to alice run." >&2
               echo "" >&2
               exit 1
             else
@@ -327,14 +329,14 @@ let
                 done
                 echo "" >&2
                 echo "Install the missing tools on your host system and re-run." >&2
-                echo "To skip this check: set ALICE_SKIP_EXECUTABLE_CHECK=1." >&2
+                echo "To skip this check: pass --skip-executable-check to alice run." >&2
                 echo "" >&2
                 exit 1
               fi
               echo "  Host executable check passed (''${#_REQUIRED_EXECS[@]} required, all present)"
             fi
             unset _REQUIRED_EXECS _MISSING _AVAILABLE_EXECS _exe _line
-            # ── end executable check ──────────────────────────────────────────
+            # ── end assertExecutables check ───────────────────────────────────
           '';
 
       mcpJsonEntry = lib.optionalAttrs (cfg.bob.mcpServers != {}) {
@@ -427,7 +429,7 @@ let
           exit 1
         fi
 
-        ${requireExecutablesCheck}
+        ${assertExecutablesCheck}
         echo "Setting up workspace '${name}' in $TARGET_DIR ..."
         ${writeStatements}
         ${linkStatements}
