@@ -111,6 +111,27 @@ let
   workspaceOptions = {
     options.workspace = {
 
+      require.executables = lib.mkOption {
+        type        = lib.types.listOf lib.types.str;
+        default     = [];
+        description = ''
+          Names of executables that must be present in the host's PATH when this
+          workspace is provisioned.  alice-shell scans the host PATH and mounts
+          a newline-separated list of available executable basenames at
+          /alice-host/executables (ALICE_HOST_EXECUTABLES).
+
+          At provisioning time the workspace binary reads that file and fails
+          if any listed name is absent.
+
+          If no executable list file is provided (ALICE_HOST_EXECUTABLES is
+          unset) and this list is non-empty, provisioning fails — unless
+          ALICE_SKIP_EXECUTABLE_CHECK=1 is set in the environment.
+
+          Example: assert that the user has docker and git installed on the host.
+        '';
+        example = lib.literalExpression ''[ "docker" "git" "node" ]'';
+      };
+
       file = lib.mkOption {
         type        = lib.types.attrsOf coercedFileEntry;
         default     = {};
@@ -243,6 +264,79 @@ let
         if entry.source != null then entry.source
         else pkgs.writeText destName entry.text;
 
+      # -----------------------------------------------------------------------
+      # requireExecutablesCheck
+      #
+      # A shell fragment baked into the workspace script.  At run-time it:
+      #   1. If workspace.require.executables is empty, does nothing.
+      #   2. If ALICE_SKIP_EXECUTABLE_CHECK=1, prints a notice and skips.
+      #   3. If ALICE_HOST_EXECUTABLES is unset, fails with guidance.
+      #   4. Reads the executable list file and fails for any name not found.
+      #
+      # The list of required names is embedded at build time as a Nix string
+      # so there is no run-time dependency on Nix or alice-module.
+      # -----------------------------------------------------------------------
+      requiredExecs = cfg.require.executables;
+
+      requireExecutablesCheck =
+        if requiredExecs == [] then ""
+        else
+          let
+            # Embed the list as a space-separated string of Nix-interpolated
+            # names.  Each name is double-quoted so spaces (unusual but valid)
+            # survive word-splitting.
+            quotedNames = lib.concatMapStringsSep " " (n: ''"${n}"'') requiredExecs;
+          in
+          ''
+            # ── workspace.require.executables check ───────────────────────────
+            _REQUIRED_EXECS=(${quotedNames})
+
+            if [ "''${ALICE_SKIP_EXECUTABLE_CHECK:-0}" = "1" ]; then
+              echo "  [skip] host executable check skipped (ALICE_SKIP_EXECUTABLE_CHECK=1)"
+            elif [ -z "''${ALICE_HOST_EXECUTABLES:-}" ]; then
+              echo "" >&2
+              echo "Error: workspace '${name}' requires these host executables:" >&2
+              for _exe in "''${_REQUIRED_EXECS[@]}"; do
+                echo "    $_exe" >&2
+              done >&2
+              echo "" >&2
+              echo "No host executable list was provided (ALICE_HOST_EXECUTABLES is unset)." >&2
+              echo "Run alice-shell to provision — it automatically scans the host PATH." >&2
+              echo "To skip this check: set ALICE_SKIP_EXECUTABLE_CHECK=1." >&2
+              echo "" >&2
+              exit 1
+            else
+              declare -A _AVAILABLE_EXECS=()
+              while IFS= read -r _line || [ -n "$_line" ]; do
+                [[ -n "$_line" ]] && _AVAILABLE_EXECS["$_line"]=1
+              done < "$ALICE_HOST_EXECUTABLES"
+
+              _MISSING=()
+              for _exe in "''${_REQUIRED_EXECS[@]}"; do
+                if [[ -z "''${_AVAILABLE_EXECS[$_exe]:-}" ]]; then
+                  _MISSING+=("$_exe")
+                fi
+              done
+
+              if [[ "''${#_MISSING[@]}" -gt 0 ]]; then
+                echo "" >&2
+                echo "Error: workspace '${name}' requires these host executables" >&2
+                echo "  that were not found in the host's PATH:" >&2
+                for _exe in "''${_MISSING[@]}"; do
+                  echo "    $_exe" >&2
+                done
+                echo "" >&2
+                echo "Install the missing tools on your host system and re-run." >&2
+                echo "To skip this check: set ALICE_SKIP_EXECUTABLE_CHECK=1." >&2
+                echo "" >&2
+                exit 1
+              fi
+              echo "  Host executable check passed (''${#_REQUIRED_EXECS[@]} required, all present)"
+            fi
+            unset _REQUIRED_EXECS _MISSING _AVAILABLE_EXECS _exe _line
+            # ── end executable check ──────────────────────────────────────────
+          '';
+
       mcpJsonEntry = lib.optionalAttrs (cfg.bob.mcpServers != {}) {
         ".bob/mcp.json" = {
           text   = null;
@@ -333,6 +427,7 @@ let
           exit 1
         fi
 
+        ${requireExecutablesCheck}
         echo "Setting up workspace '${name}' in $TARGET_DIR ..."
         ${writeStatements}
         ${linkStatements}
