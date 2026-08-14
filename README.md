@@ -1,10 +1,13 @@
 # alice-module
 
-**Alice Nix Module** — a Nix flake that provides a declarative harness for
-setting up Bob workspaces.  A downstream consumer adds this flake as an input
-and uses `lib.mkWorkspace` (or `lib.mkWorkspaceIn`) to build
-`writeShellApplication` derivations that provision a target directory with
-rules, skills, MCP-server registrations, and tool symlinks.
+![Alice](../demos/alice_head.png)
+
+**alice-module** is the foundational layer of the Alice framework — a Nix flake
+that provides the declarative workspace-provisioning engine used by all other
+Alice repositories. It exposes `lib.mkWorkspace` / `lib.mkWorkspaceIn`, which
+downstream consumers (`alice-workspaces`, `alice-image`) use to build
+`writeShellApplication` derivations that provision a target directory with rules,
+skills, MCP-server registrations, and tool symlinks.
 
 ---
 
