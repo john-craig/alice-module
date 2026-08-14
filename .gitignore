@@ -1,12 +1,3 @@
-# Nix build artefacts
-result
-result-*
-
-# Generated workspace output (docker run output directory)
-generated-workspace/
-
-# Bob workspace references cache
 .bob/references
-
-# Editor
-.vscode/
+generated-workspace/
+result
