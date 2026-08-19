@@ -32,7 +32,7 @@ Exit code: 0
 ## Docker tests
 
 Tests covering Docker image build and runtime (Tests 2–9) have moved to
-[`alice-image/TESTING.md`](https://github.com/john-craig/alice-image/blob/main/TESTING.md).
+[`alice-image/TESTING.md`](https://github.com/your-org/alice-image/blob/main/TESTING.md).
 
 ---
 

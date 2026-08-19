@@ -23,7 +23,7 @@ let
   # Update `rev` whenever you want to pick up new shared workspace definitions.
   # ---------------------------------------------------------------------------
   alice-workspaces = builtins.fetchGit {
-    url = "ssh://git@github.com/john-craig/alice-workspaces.git";
+    url = "ssh://git@github.com/your-org/alice-workspaces.git";
     ref = "main";
   };
 
@@ -32,11 +32,8 @@ in
 # ---------------------------------------------------------------------------
 # Option A — use the shared "blank" workspace from alice-workspaces
 #
-# Switch "blank" to any of:
-#   "vulnerability-detection-workspace"
-#   "zos-plx-workspace"
-#   "example-workspace"
-# to get that workspace's full set of skills, rules, and MCP servers.
+# Switch "blank" to any other workspace name defined in your alice-workspaces
+# repo to get that workspace's full set of skills, rules, and MCP servers.
 # ---------------------------------------------------------------------------
 (import "${alice-workspaces}/workspaces/blank/default.nix")
   { inherit pkgs utils; workspaces = {}; }
