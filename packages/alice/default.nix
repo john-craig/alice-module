@@ -11,12 +11,20 @@
 #
 # Usage
 # -----
+#   alice init [--target <dir>]
+#   alice switch
 #   alice switch --workspace ./my-workspace.nix --target /path/to/dir
 #   alice switch --workspace ./my-workspace.nix --name my-ws --target .
 #
 # Subcommands
 # -----------
+#   init      Create a .alice/workspace.nix starter file in the target directory.
+#             Options:
+#               -t, --target    <dir>    Directory to initialise (defaults to .).
+#               -f, --force              Overwrite an existing workspace.nix.
+#
 #   switch    Evaluate the workspace file and provision the target directory.
+#             Defaults: --workspace .alice/workspace.nix  --target .
 #             Options:
 #               -w, --workspace <file>   Path to the workspace.nix module file.
 #               -t, --target    <dir>    Target directory to provision.
@@ -94,24 +102,123 @@ pkgs.writeShellApplication {
     alice — declarative workspace provisioning
 
     Usage:
-      alice switch [OPTIONS]
+      alice <subcommand> [OPTIONS]
 
     Subcommands:
+      init          Create a .alice/workspace.nix starter file in a directory.
       switch        Evaluate a workspace.nix file and provision a target directory.
 
+    Options for init:
+      -t, --target  <dir>    Directory to initialise (defaults to current directory).
+      -f, --force            Overwrite an existing .alice/workspace.nix.
+      -h, --help             Show this help message.
+
     Options for switch:
-      -w, --workspace <file>   Path to the workspace.nix module file (required).
-      -t, --target    <dir>    Target directory to provision (required).
+      -w, --workspace <file>   Path to workspace.nix (default: .alice/workspace.nix).
+      -t, --target    <dir>    Target directory to provision (default: current directory).
       -n, --name      <name>   Workspace name key inside the file.
                                Defaults to the first key found in the file.
       -s, --system    <sys>    Nix system string (defaults to the running system).
       -h, --help               Show this help message.
 
     Examples:
+      alice init
+      alice init --target ~/projects/my-project
+      alice switch
       alice switch --workspace ./workspace.nix --target .
       alice switch -w ~/projects/my-ws/workspace.nix -t ~/projects/my-ws
       alice switch -w ./workspace.nix -t . --name my-workspace
     USAGE
+    }
+
+    # ---------------------------------------------------------------------------
+    # cmd_init — implement `alice init`
+    # ---------------------------------------------------------------------------
+    cmd_init() {
+      local target_dir="."
+      local force=0
+
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -t|--target) target_dir="$2"; shift 2 ;;
+          -f|--force)  force=1;         shift   ;;
+          -h|--help)   usage; exit 0 ;;
+          *) echo "alice init: unknown option: $1" >&2; usage >&2; exit 1 ;;
+        esac
+      done
+
+      if [ ! -d "$target_dir" ]; then
+        echo "alice init: target directory does not exist: $target_dir" >&2
+        exit 1
+      fi
+
+      local dest
+      dest="$(realpath "$target_dir")/.alice/workspace.nix"
+
+      if [ -f "$dest" ] && [ "$force" -eq 0 ]; then
+        echo "alice init: $dest already exists (use --force to overwrite)" >&2
+        exit 1
+      fi
+
+      mkdir -p "$(dirname "$dest")"
+
+      cat > "$dest" <<'WORKSPACE_NIX'
+    # .alice/workspace.nix — Alice workspace configuration
+    #
+    # This file shows two ways to configure a workspace:
+    #
+    # ── Option A: pull a shared workspace from alice-workspaces (recommended) ────
+    #
+    #   Use this when a named workspace already exists in alice-workspaces that
+    #   matches your project's needs.  The workspace definition is fetched from
+    #   the shared repo at a pinned revision so it is reproducible.
+    #
+    # ── Option B: define your own workspace inline ────────────────────────────────
+    #
+    #   Use this for project-specific configuration that does not belong in the
+    #   shared alice-workspaces repo.
+    #
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    { pkgs, utils, ... }:
+
+    let
+      # ---------------------------------------------------------------------------
+      # Pin the alice-workspaces repository at a specific revision.
+      # Update `rev` whenever you want to pick up new shared workspace definitions.
+      # ---------------------------------------------------------------------------
+      alice-workspaces = builtins.fetchGit {
+        url = "ssh://git@github.com/your-org/alice-workspaces.git";
+        ref = "main";
+      };
+
+    in
+
+    # ---------------------------------------------------------------------------
+    # Option A — use the shared "blank" workspace from alice-workspaces
+    #
+    # Switch "blank" to any other workspace name defined in your alice-workspaces
+    # repo to get that workspace's full set of skills, rules, and MCP servers.
+    # ---------------------------------------------------------------------------
+    (import "''${alice-workspaces}/workspaces/blank/default.nix")
+      { inherit pkgs utils; workspaces = {}; }
+
+    # ---------------------------------------------------------------------------
+    # Option B — define your own workspace inline (comment out Option A above
+    # and uncomment this block instead)
+    # ---------------------------------------------------------------------------
+    # {
+    #   name = "my-workspace";
+    #
+    #   workspace.file."README-alice.txt".text = '''
+    #     This workspace was provisioned by Alice.
+    #   ''';
+    #
+    #   workspace.packages = [ pkgs.git pkgs.curl ];
+    # }
+    WORKSPACE_NIX
+
+      echo "alice: created $dest"
     }
 
     # ---------------------------------------------------------------------------
@@ -135,16 +242,12 @@ pkgs.writeShellApplication {
         esac
       done
 
-      # Validate required arguments
+      # Apply defaults
       if [ -z "$workspace_file" ]; then
-        echo "alice switch: --workspace is required" >&2
-        usage >&2
-        exit 1
+        workspace_file=".alice/workspace.nix"
       fi
       if [ -z "$target_dir" ]; then
-        echo "alice switch: --target is required" >&2
-        usage >&2
-        exit 1
+        target_dir="."
       fi
 
       # Resolve to absolute paths so Nix can reference them as path literals
@@ -224,6 +327,7 @@ pkgs.writeShellApplication {
     shift
 
     case "$subcommand" in
+      init)      cmd_init   "$@" ;;
       switch)    cmd_switch "$@" ;;
       -h|--help) usage; exit 0 ;;
       *)
