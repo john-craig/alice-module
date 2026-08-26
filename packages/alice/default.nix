@@ -163,59 +163,151 @@ pkgs.writeShellApplication {
       mkdir -p "$(dirname "$dest")"
 
       cat > "$dest" <<'WORKSPACE_NIX'
-    # .alice/workspace.nix — Alice workspace configuration
+    # .alice/workspace.nix
     #
-    # This file shows two ways to configure a workspace:
+    # Alice workspace configuration for this repository.
     #
-    # ── Option A: pull a shared workspace from alice-workspaces (recommended) ────
+    # Run `alice switch` from this directory to provision the workspace.
     #
-    #   Use this when a named workspace already exists in alice-workspaces that
-    #   matches your project's needs.  The workspace definition is fetched from
-    #   the shared repo at a pinned revision so it is reproducible.
-    #
-    # ── Option B: define your own workspace inline ────────────────────────────────
-    #
-    #   Use this for project-specific configuration that does not belong in the
-    #   shared alice-workspaces repo.
-    #
-    # ─────────────────────────────────────────────────────────────────────────────
+    # Every option below is commented out — uncomment and fill in the sections
+    # you need.  The workspace name ("my-workspace") is used as the key passed
+    # to `alice switch --name`; it defaults to the first key found in this file
+    # so you do not normally need to pass it explicitly.
 
     { pkgs, utils, ... }:
 
-    let
-      # ---------------------------------------------------------------------------
-      # Pin the alice-workspaces repository at a specific revision.
-      # Update `rev` whenever you want to pick up new shared workspace definitions.
-      # ---------------------------------------------------------------------------
-      alice-workspaces = builtins.fetchGit {
-        url = "ssh://git@github.com/your-org/alice-workspaces.git";
-        ref = "main";
+    {
+      workspaces."my-workspace" = {
+
+        # -----------------------------------------------------------------------
+        # workspace.file
+        #
+        # Arbitrary files written into the root of the target directory.
+        #
+        # The attribute name is the relative destination path.  Values are either
+        # a plain string (coerced to { text = …; }) or a submodule:
+        #
+        #   { text = "…"; }              — inline content
+        #   { source = /nix/store/path; } — copy a file from the Nix store
+        #
+        # Set dontIgnore = true to keep a file tracked in git rather than
+        # appending it to .gitignore automatically.
+        # -----------------------------------------------------------------------
+        # workspace.file."README.md" = {
+        #   dontIgnore = true;
+        #   text = '''
+        #     # my-workspace
+        #
+        #     This directory was provisioned by Alice.
+        #   ''';
+        # };
+        #
+        # workspace.file."config/settings.json" = builtins.toJSON {
+        #   theme    = "dark";
+        #   autosave = true;
+        # };
+
+        # -----------------------------------------------------------------------
+        # workspace.bob.rules
+        #
+        # Markdown rule files written under .bob/rules/ in the target directory.
+        # Bob reads these automatically as project-specific instructions.
+        # -----------------------------------------------------------------------
+        # workspace.bob.rules."my-rules.md" = '''
+        #   # My rules
+        #
+        #   - Always write tests.
+        #   - Prefer explicit over implicit.
+        # ''';
+
+        # -----------------------------------------------------------------------
+        # workspace.bob.skills
+        #
+        # Skill files written under .bob/skills/ in the target directory.
+        #
+        # Skills can be defined inline (text = ) or pulled from an upstream
+        # repository using utils.repo (see the fetchGit example in the let block
+        # below).
+        # -----------------------------------------------------------------------
+        # workspace.bob.skills."MySkill.md" = '''
+        #   ---
+        #   name: my-skill
+        #   description: Describe what this skill does in one sentence.
+        #   ---
+        #
+        #   Detailed skill instructions go here.
+        # ''';
+        #
+        # — or pull a skill file from an upstream repo (uncomment the
+        #   `my-skills-repo` fetchGit block in the let section below first) —
+        #
+        # workspace.bob.skills."UpstreamSkill.md" = {
+        #   source = utils.repo my-skills-repo "skills/UpstreamSkill.md";
+        # };
+
+        # -----------------------------------------------------------------------
+        # workspace.bob.mcpServers
+        #
+        # MCP server registrations written into .bob/mcp.json.
+        #
+        # Stdio server  — launched as a local subprocess:
+        #   command     = absolute path to the executable
+        #   args        = list of CLI arguments
+        #   env         = environment variables for the subprocess
+        #   alwaysAllow = tool names auto-approved without user confirmation
+        #
+        # HTTP server   — contacted over the network:
+        #   type        = "streamable-http"  (or "http" for legacy SSE)
+        #   url         = server base URL
+        #   headers     = HTTP headers sent with every request (e.g. auth tokens)
+        #   alwaysAllow = tool names auto-approved without user confirmation
+        # -----------------------------------------------------------------------
+        # workspace.bob.mcpServers."my-stdio-server" = {
+        #   command     = "/path/to/server";
+        #   args        = [ "/path/to/server.js" ];
+        #   env         = { LOG_LEVEL = "info"; };
+        #   alwaysAllow = [ "read" ];
+        # };
+        #
+        # workspace.bob.mcpServers."my-http-server" = {
+        #   type    = "streamable-http";
+        #   url     = "https://mcp.example.com/";
+        #   headers = { Authorization = "Bearer ''${env:MY_TOKEN}"; };
+        # };
+
+        # -----------------------------------------------------------------------
+        # workspace.packages
+        #
+        # Nix packages whose binaries are symlinked into .local/bin/ in the
+        # target directory, making them available without altering $PATH globally.
+        # -----------------------------------------------------------------------
+        # workspace.packages = [ pkgs.ripgrep pkgs.jq ];
+
       };
-
-    in
+    }
 
     # ---------------------------------------------------------------------------
-    # Option A — use the shared "blank" workspace from alice-workspaces
+    # To pull files from an external git repository, add a fetchGit call in a
+    # let block and reference it with utils.repo:
     #
-    # Switch "blank" to any other workspace name defined in your alice-workspaces
-    # repo to get that workspace's full set of skills, rules, and MCP servers.
-    # ---------------------------------------------------------------------------
-    (import "''${alice-workspaces}/workspaces/blank/default.nix")
-      { inherit pkgs utils; workspaces = {}; }
-
-    # ---------------------------------------------------------------------------
-    # Option B — define your own workspace inline (comment out Option A above
-    # and uncomment this block instead)
-    # ---------------------------------------------------------------------------
+    # { pkgs, utils, ... }:
+    #
+    # let
+    #   my-skills-repo = builtins.fetchGit {
+    #     url = "ssh://git@github.com/your-org/your-skills-repo.git";
+    #     ref = "main";
+    #     # Pin to a specific commit for reproducibility:
+    #     # rev = "abc1234...";
+    #   };
+    # in
     # {
-    #   name = "my-workspace";
-    #
-    #   workspace.file."README-alice.txt".text = '''
-    #     This workspace was provisioned by Alice.
-    #   ''';
-    #
-    #   workspace.packages = [ pkgs.git pkgs.curl ];
+    #   workspaces."my-workspace" = {
+    #     workspace.bob.skills."UpstreamSkill.md" = {
+    #       source = utils.repo my-skills-repo "skills/UpstreamSkill.md";
+    #     };
+    #   };
     # }
+    # ---------------------------------------------------------------------------
     WORKSPACE_NIX
 
       echo "alice: created $dest"
