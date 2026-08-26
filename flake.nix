@@ -107,11 +107,6 @@
           };
 
           # ------------------------------------------------------------------
-          # Sample package
-          # ------------------------------------------------------------------
-          hello = pkgs.callPackage ./packages/hello { inherit pkgs; };
-
-          # ------------------------------------------------------------------
           # Example workspace: sample-workspace
           #
           # Demonstrates every supported workspace option (workspace.file,
