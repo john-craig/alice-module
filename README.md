@@ -5,7 +5,7 @@ setting up Bob workspaces.  It ships two complementary usage modes:
 
 | Mode | How | When to use |
 |---|---|---|
-| **`alice switch`** | Runtime CLI — point it at any `workspace.nix` and a target directory | One-off provisioning; no flake boilerplate needed |
+| **`alice switch`** | Runtime CLI — runs against `.alice/workspace.nix` in the current directory by default, or any file you point it at | One-off provisioning; no flake boilerplate needed |
 | **`lib.mkWorkspace`** | Build-time library — declare workspaces as flake outputs | Reproducible, version-pinned workspace derivations in your own flake |
 
 ---
@@ -14,29 +14,52 @@ setting up Bob workspaces.  It ships two complementary usage modes:
 
 The fastest path.  No downstream flake required.
 
+**Step 1** — create a `.alice/workspace.nix` starter file in your project:
+
 ```bash
-# Provision the current directory from a local workspace.nix
-nix run github:your-org/alice-module#alice -- switch \
-  --workspace ./workspace.nix \
-  --target .
+alice init
 ```
 
-The workspace name is auto-detected from the first key in `workspaces`.
-Pass `--name` to be explicit when a file defines multiple workspaces.
+Or, if running directly from this flake without installing:
 
 ```bash
+nix run github:your-org/alice-module#alice -- init
+```
+
+**Step 2** — edit `.alice/workspace.nix` to declare your workspace, then
+provision the current directory:
+
+```bash
+alice switch
+```
+
+`alice switch` with no arguments defaults to `--workspace .alice/workspace.nix`
+and `--target .`.  The workspace name is auto-detected from the first key in
+`workspaces`; pass `--name` to be explicit when a file defines multiple
+workspaces.
+
+```bash
+# Explicit form — all flags optional if the defaults suit you
 alice switch \
   --workspace ~/projects/my-ws/workspace.nix \
   --target    ~/projects/my-ws \
   --name      my-workspace
 ```
 
+### `alice init` options
+
+| Flag | Short | Description |
+|---|---|---|
+| `--target <dir>` | `-t` | Directory to initialise. Defaults to `.`. |
+| `--force` | `-f` | Overwrite an existing `.alice/workspace.nix`. |
+| `--help` | `-h` | Show usage. |
+
 ### `alice switch` options
 
 | Flag | Short | Description |
 |---|---|---|
-| `--workspace <file>` | `-w` | Path to the `workspace.nix` module file **(required)** |
-| `--target <dir>` | `-t` | Target directory to provision **(required)** |
+| `--workspace <file>` | `-w` | Path to the `workspace.nix` module file. Defaults to `.alice/workspace.nix`. |
+| `--target <dir>` | `-t` | Target directory to provision. Defaults to `.`. |
 | `--name <name>` | `-n` | Workspace name key. Defaults to the first key in `workspaces`. |
 | `--system <sys>` | `-s` | Nix system string. Defaults to `builtins.currentSystem`. |
 | `--help` | `-h` | Show usage. |
@@ -88,7 +111,7 @@ flake.nix                        Flake definition; exposes lib, packages, and ap
 modules/
   workspaces.nix                 Core mkWorkspace engine
 packages/
-  alice/                         The alice CLI (alice switch)
+  alice/                         The alice CLI (alice init, alice switch)
   hello/                         Sample package (hello-world shell script)
 examples/
   sample-workspace/default.nix   Full example workspace (all fields demonstrated)
@@ -105,6 +128,10 @@ The `alice` CLI.  Accepts a `workspace.nix` file and a target directory at
 runtime and provisions the directory on the spot.
 
 ```bash
+# Default: uses .alice/workspace.nix in the current directory
+nix run .#alice -- switch
+
+# Explicit paths
 nix run .#alice -- switch --workspace ./workspace.nix --target .
 ```
 
@@ -204,6 +231,9 @@ To use with `alice switch`, point the CLI at this file directly:
 ```bash
 alice switch --workspace ./workspaces/my-workspace/default.nix --target .
 ```
+
+Or place it at `.alice/workspace.nix` in your project root and run `alice switch`
+with no arguments.
 
 To expose it as a named flake package, register it in your downstream flake:
 
