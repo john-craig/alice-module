@@ -33,7 +33,7 @@ provision the current directory:
 alice switch
 ```
 
-`alice switch` with no arguments defaults to `--workspace .alice/workspace.nix`
+`alice switch` with no arguments defaults to `--file .alice/workspace.nix`
 and `--target .`.  The workspace name is auto-detected from the first key in
 `workspaces`; pass `--name` to be explicit when a file defines multiple
 workspaces.
@@ -41,9 +41,9 @@ workspaces.
 ```bash
 # Explicit form — all flags optional if the defaults suit you
 alice switch \
-  --workspace ~/projects/my-ws/workspace.nix \
-  --target    ~/projects/my-ws \
-  --name      my-workspace
+  --file   ~/projects/my-ws/workspace.nix \
+  --target ~/projects/my-ws \
+  --name   my-workspace
 ```
 
 ### `alice init` options
@@ -58,7 +58,7 @@ alice switch \
 
 | Flag | Short | Description |
 |---|---|---|
-| `--workspace <file>` | `-w` | Path to the `workspace.nix` module file. Defaults to `.alice/workspace.nix`. |
+| `--file <file>` | `-f` | Path to the `workspace.nix` module file. Defaults to `.alice/workspace.nix`. |
 | `--target <dir>` | `-t` | Target directory to provision. Defaults to `.`. |
 | `--name <name>` | `-n` | Workspace name key. Defaults to the first key in `workspaces`. |
 | `--system <sys>` | `-s` | Nix system string. Defaults to `builtins.currentSystem`. |
@@ -132,7 +132,7 @@ runtime and provisions the directory on the spot.
 nix run .#alice -- switch
 
 # Explicit paths
-nix run .#alice -- switch --workspace ./workspace.nix --target .
+nix run .#alice -- switch --file ./workspace.nix --target .
 ```
 
 See [Quick start — `alice switch`](#quick-start--alice-switch) for the full
@@ -229,7 +229,7 @@ A workspace module is a Nix function with the signature
 To use with `alice switch`, point the CLI at this file directly:
 
 ```bash
-alice switch --workspace ./workspaces/my-workspace/default.nix --target .
+alice switch --file ./workspaces/my-workspace/default.nix --target .
 ```
 
 Or place it at `.alice/workspace.nix` in your project root and run `alice switch`

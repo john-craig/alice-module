@@ -13,8 +13,8 @@
 # -----
 #   alice init [--target <dir>]
 #   alice switch
-#   alice switch --workspace ./my-workspace.nix --target /path/to/dir
-#   alice switch --workspace ./my-workspace.nix --name my-ws --target .
+#   alice switch --file ./my-workspace.nix --target /path/to/dir
+#   alice switch --file ./my-workspace.nix --name my-ws --target .
 #
 # Subcommands
 # -----------
@@ -24,9 +24,9 @@
 #               -f, --force              Overwrite an existing workspace.nix.
 #
 #   switch    Evaluate the workspace file and provision the target directory.
-#             Defaults: --workspace .alice/workspace.nix  --target .
+#             Defaults: --file .alice/workspace.nix  --target .
 #             Options:
-#               -w, --workspace <file>   Path to the workspace.nix module file.
+#               -f, --file      <file>   Path to the workspace.nix module file.
 #               -t, --target    <dir>    Target directory to provision.
 #               -n, --name      <name>   Workspace name key inside the file.
 #                                        If omitted, the first key in
@@ -114,20 +114,20 @@ pkgs.writeShellApplication {
       -h, --help             Show this help message.
 
     Options for switch:
-      -w, --workspace <file>   Path to workspace.nix (default: .alice/workspace.nix).
-      -t, --target    <dir>    Target directory to provision (default: current directory).
-      -n, --name      <name>   Workspace name key inside the file.
-                               Defaults to the first key found in the file.
-      -s, --system    <sys>    Nix system string (defaults to the running system).
-      -h, --help               Show this help message.
+      -f, --file   <file>   Path to workspace.nix (default: .alice/workspace.nix).
+      -t, --target <dir>    Target directory to provision (default: current directory).
+      -n, --name   <name>   Workspace name key inside the file.
+                            Defaults to the first key found in the file.
+      -s, --system <sys>    Nix system string (defaults to the running system).
+      -h, --help            Show this help message.
 
     Examples:
       alice init
       alice init --target ~/projects/my-project
       alice switch
-      alice switch --workspace ./workspace.nix --target .
-      alice switch -w ~/projects/my-ws/workspace.nix -t ~/projects/my-ws
-      alice switch -w ./workspace.nix -t . --name my-workspace
+      alice switch --file ./workspace.nix --target .
+      alice switch -f ~/projects/my-ws/workspace.nix -t ~/projects/my-ws
+      alice switch -f ./workspace.nix -t . --name my-workspace
     USAGE
     }
 
@@ -325,7 +325,7 @@ pkgs.writeShellApplication {
       # Parse options
       while [ "$#" -gt 0 ]; do
         case "$1" in
-          -w|--workspace) workspace_file="$2"; shift 2 ;;
+          -f|--file) workspace_file="$2"; shift 2 ;;
           -t|--target)    target_dir="$2";     shift 2 ;;
           -n|--name)      ws_name="$2";        shift 2 ;;
           -s|--system)    nix_system="$2";     shift 2 ;;
