@@ -78,7 +78,7 @@ let
         nativeOverride = native;
       };
     in
-    engine wsName workspaceFile
+    engine.mkWorkspace wsName workspaceFile
   '';
 
 in

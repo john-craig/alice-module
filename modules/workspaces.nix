@@ -2,19 +2,40 @@
 #
 # Core workspace-building machinery.
 #
-# This module is imported by flake.nix and re-exported as
-# `self.lib.mkWorkspace` so that downstream flake consumers can call it
-# directly.
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC API — two entry points
+# ─────────────────────────────────────────────────────────────────────────────
 #
-# The public API is a single function:
+# 1. mkWorkspaceConfig  name moduleFile { extraModules? }
+#    ────────────────────────────────────────────────────
+#    System-independent.  Returns a workspace configuration object:
 #
-#   mkWorkspace pkgs name moduleFile
+#      wsCfg.configBlock            – the raw config block passed in
+#      wsCfg.config                 – evaluated workspace.* options attrset
+#      wsCfg.override  overrideFn   – new wsCfg with config transformed by overrideFn
+#      wsCfg.provision pkgs         – writeShellApplication that provisions a directory
 #
-# `pkgs`       – a nixpkgs package set (import nixpkgs { inherit system; })
-# `name`       – the workspace name string, e.g. "my-workspace"
-# `moduleFile` – a Nix path to the workspace module, e.g. ./workspaces/my-workspace/default.nix
+#    Intended for use in `workspaceConfigurations` flake outputs:
 #
-# A workspace module is a function of the form:
+#      workspaceConfigurations."my-workspace" =
+#        alice.lib.mkWorkspaceConfig "my-workspace" ./workspace.nix {};
+#
+#    To get a runnable derivation for a specific system:
+#
+#      wsCfg.provision (import nixpkgs { system = "x86_64-linux"; })
+#
+# 2. mkWorkspace  name moduleFile          (legacy / convenience)
+#    ─────────────────────────────────────
+#    System-bound.  Returns a writeShellApplication derivation (the provisioning
+#    script) with .override attached.  Maintained for backwards compatibility
+#    and convenience when the consumer already has a pkgs in scope.
+#
+#      drv              – the workspace-<name> provisioning script
+#      drv.override fn  – new drv with config transformed by fn
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WORKSPACE MODULE FORMAT
+# ─────────────────────────────────────────────────────────────────────────────
 #
 #   { pkgs, workspaces, utils }:
 #   {
@@ -34,11 +55,6 @@
 # `utils.root relPath`       resolves a path relative to the flake root.
 # `utils.repo repo relPath`  resolves a path inside an externally fetched repo.
 #
-# The produced derivation is a `writeShellApplication` named `workspace-<name>`.
-# Run it with a target directory to provision that directory:
-#
-#   workspace-my-workspace /path/to/target-dir
-#
 { pkgs, flakeRoot, nativeOverride ? null }:
 
 let
@@ -46,13 +62,6 @@ let
 
   # ---------------------------------------------------------------------------
   # fileEntry — submodule for a single file declaration
-  #
-  # Accepts either:
-  #   text   = "<string contents>"   (inline text; mutually exclusive with source)
-  #   source = /nix/store/path       (any Nix path; mutually exclusive with text)
-  #
-  # A bare string assigned to an attrsOf fileEntry option is coerced to
-  # { text = "<string>"; } by the mkCoercedTo wrapper below.
   # ---------------------------------------------------------------------------
   fileEntryType = lib.types.submodule {
     options = {
@@ -244,219 +253,294 @@ let
   # `utils.repo fetched path`  →  <fetched>/<path>        (a Nix path)
   # ---------------------------------------------------------------------------
   utils = {
-    root  = relPath:          flakeRoot + "/${relPath}";
-    repo  = repo: relPath:   repo + "/${relPath}";
+    root  = relPath:        flakeRoot + "/${relPath}";
+    repo  = repo: relPath: repo + "/${relPath}";
   };
 
-in
+  # ---------------------------------------------------------------------------
+  # mkMcpServerJson — render a single MCP server entry to its JSON-ready attrset.
+  # ---------------------------------------------------------------------------
+  mkMcpServerJson = srv:
+    if srv.type != null then
+      { type = srv.type; url = srv.url; }
+      // lib.optionalAttrs (srv.headers     != {}) { headers     = srv.headers; }
+      // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; }
+    else
+      { command = srv.command; }
+      // lib.optionalAttrs (srv.args        != []) { args        = srv.args; }
+      // lib.optionalAttrs (srv.env         != {}) { env         = srv.env; }
+      // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; };
 
-# ---------------------------------------------------------------------------
-# mkWorkspace — public entry point
-#
-# Returns a `writeShellApplication` derivation named `workspace-<name>` that,
-# when run with a target directory, provisions that directory according to the
-# options declared in `moduleFile`.
-# ---------------------------------------------------------------------------
-name: moduleFile:
-  let
-    returned    = (import moduleFile) { inherit pkgs utils; workspaces = {}; };
-    configBlock = returned.workspaces.${name};
+  # ---------------------------------------------------------------------------
+  # nonNativeChecks — evaluate all non-native enforcement rules against cfg.
+  # Returns null (native mode) or an attrset of check results.
+  # Used with builtins.deepSeq to force evaluation before building a derivation.
+  # ---------------------------------------------------------------------------
+  mkNonNativeChecks = name: cfg:
+    if cfg.native then null
+    else
+      let
+        requireNative = condition: message:
+          if !condition
+          then throw "alice workspace '${name}': ${message}"
+          else null;
 
-    evaluated = lib.evalModules {
-      modules = [
-        workspaceOptions
-        { config = configBlock; }
-      ] ++ lib.optional (nativeOverride != null) {
-        # CLI --native / --no-native override: takes priority over the module declaration.
-        config.workspace.native = lib.mkForce nativeOverride;
-      };
-    };
+        _checkPackages = requireNative
+          (cfg.packages == [])
+          "workspace.native = false but workspace.packages is non-empty. \
+           Packages require Nix store paths and cannot be used in non-native mode. \
+           Remove all entries from workspace.packages.";
 
-    cfg = evaluated.config.workspace;
+        checkSourceEntry = optionPath: entries:
+          lib.mapAttrsToList (key: entry:
+            requireNative
+              (entry.source == null)
+              "${optionPath}.\"${key}\" uses source = …, which requires a Nix store path. \
+               Use text = … instead, or remove the entry, when workspace.native = false."
+          ) entries;
 
-    # ---------------------------------------------------------------------------
-    # Non-native enforcement — evaluated at Nix eval time so errors are caught
-    # before any derivation is built or any file is written.
-    # ---------------------------------------------------------------------------
+        _checkFileSources  = checkSourceEntry "workspace.file"       cfg.file;
+        _checkRuleSources  = checkSourceEntry "workspace.bob.rules"  cfg.bob.rules;
+        _checkSkillSources = checkSourceEntry "workspace.bob.skills" cfg.bob.skills;
 
-    # Check a condition; throw a clear error if it fails.
-    # Returns null so it can be sequenced with `lib.seq` or used in an assert.
-    requireNative = condition: message:
-      if !condition
-      then throw "alice workspace '${name}': ${message}"
-      else null;
-
-    nonNativeChecks =
-      if cfg.native then null
-      else
-        let
-          # 2.1  packages must be empty
-          _checkPackages = requireNative
-            (cfg.packages == [])
-            "workspace.native = false but workspace.packages is non-empty. \
-             Packages require Nix store paths and cannot be used in non-native mode. \
-             Remove all entries from workspace.packages.";
-
-          # 2.2  file / rules / skills: no source entries
-          checkSourceEntry = optionPath: entries:
-            lib.mapAttrsToList (key: entry:
-              requireNative
-                (entry.source == null)
-                "${optionPath}.\"${key}\" uses source = …, which requires a Nix store path. \
-                 Use text = … instead, or remove the entry, when workspace.native = false."
-            ) entries;
-
-          _checkFileSources  = checkSourceEntry "workspace.file"       cfg.file;
-          _checkRuleSources  = checkSourceEntry "workspace.bob.rules"  cfg.bob.rules;
-          _checkSkillSources = checkSourceEntry "workspace.bob.skills" cfg.bob.skills;
-
-          # 2.3  MCP servers: command must not be a Nix store path
-          # 2.4  MCP servers: non-store command must be declared in assertHostBinaries
-          _checkMcpCommands = lib.mapAttrsToList (serverName: srv:
-            if srv.command == null then null          # HTTP server — no command
-            else if lib.hasPrefix "/nix/store/" srv.command then
-              requireNative false
-                "workspace.bob.mcpServers.\"${serverName}\" has command = \"${srv.command}\", \
-                 which is a Nix store path. Nix store paths are not permitted when \
-                 workspace.native = false. Use a host binary name instead, or remove this server."
-            else
-              let binName = builtins.baseNameOf srv.command; in
-              requireNative
-                (builtins.elem binName cfg.assertHostBinaries)
-                "workspace.bob.mcpServers.\"${serverName}\" uses command = \"${srv.command}\" \
-                 (resolved name: \"${binName}\"), but \"${binName}\" is not listed in \
-                 workspace.assertHostBinaries. Add \"${binName}\" to assertHostBinaries so \
-                 alice can verify it is present on the target host at provision time."
-          ) cfg.bob.mcpServers;
-
-          # Force evaluation of all checks; the value itself is unused.
-          _allChecks = {
-            inherit _checkPackages _checkFileSources _checkRuleSources
-                    _checkSkillSources _checkMcpCommands;
-          };
-        in
-          _allChecks;
-
-    toStorePath = destName: entry:
-      if entry.source != null then entry.source
-      else pkgs.writeText destName entry.text;
-
-    mcpJsonEntry = lib.optionalAttrs (cfg.bob.mcpServers != {}) {
-      ".bob/mcp.json" = {
-        text   = null;
-        source = pkgs.writeText "mcp.json" (builtins.toJSON {
-          mcpServers = lib.mapAttrs (_: srv:
-            if srv.type != null then
-              { type = srv.type; url = srv.url; }
-              // lib.optionalAttrs (srv.headers     != {}) { headers     = srv.headers; }
-              // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; }
-            else
-              { command = srv.command; }
-              // lib.optionalAttrs (srv.args        != []) { args        = srv.args; }
-              // lib.optionalAttrs (srv.env         != {}) { env         = srv.env; }
-              // lib.optionalAttrs (srv.alwaysAllow != []) { alwaysAllow = srv.alwaysAllow; }
-          ) cfg.bob.mcpServers;
-        });
-      };
-    };
-
-    allFiles =
-      cfg.file //
-      lib.mapAttrs' (k: v: lib.nameValuePair ".bob/rules/${k}"  v) cfg.bob.rules  //
-      lib.mapAttrs' (k: v: lib.nameValuePair ".bob/skills/${k}" v) cfg.bob.skills //
-      mcpJsonEntry;
-
-    # Paths to add to .gitignore — everything that does not set dontIgnore = true.
-    gitignorePaths = lib.filter (p: !(allFiles.${p}.dontIgnore or false))
-                       (lib.attrNames allFiles);
-
-    gitignoreStatement =
-      if gitignorePaths == [] then ""
-      else
-        let
-          addLines = lib.concatStringsSep "\n" (
-            map (p: ''grep -qxF ${lib.escapeShellArg p} "$GITIGNORE" || echo ${lib.escapeShellArg p} >> "$GITIGNORE"'')
-              gitignorePaths
-          );
-        in
-        ''
-          GITIGNORE="$TARGET_DIR/.gitignore"
-          touch "$GITIGNORE"
-          ${addLines}
-          echo "  updated .gitignore"
-        '';
-
-    writeStatements = lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (filePath: entry:
-        let stored = toStorePath filePath entry; in
-        ''
-          if [ -d "${stored}" ]; then
-            mkdir -p "$TARGET_DIR/${filePath}"
-            cp -r --no-preserve=mode "${stored}/." "$TARGET_DIR/${filePath}/"
-            echo "  copied directory ${filePath}"
+        _checkMcpCommands = lib.mapAttrsToList (serverName: srv:
+          if srv.command == null then null
+          else if lib.hasPrefix "/nix/store/" srv.command then
+            requireNative false
+              "workspace.bob.mcpServers.\"${serverName}\" has command = \"${srv.command}\", \
+               which is a Nix store path. Nix store paths are not permitted when \
+               workspace.native = false. Use a host binary name instead, or remove this server."
           else
-            install -D --mode=0644 "${stored}" "$TARGET_DIR/${filePath}"
-            echo "  wrote ${filePath}"
-          fi
-        ''
-      ) allFiles
-    );
+            let binName = builtins.baseNameOf srv.command; in
+            requireNative
+              (builtins.elem binName cfg.assertHostBinaries)
+              "workspace.bob.mcpServers.\"${serverName}\" uses command = \"${srv.command}\" \
+               (resolved name: \"${binName}\"), but \"${binName}\" is not listed in \
+               workspace.assertHostBinaries. Add \"${binName}\" to assertHostBinaries so \
+               alice can verify it is present on the target host at provision time."
+        ) cfg.bob.mcpServers;
+      in
+      {
+        inherit _checkPackages _checkFileSources _checkRuleSources
+                _checkSkillSources _checkMcpCommands;
+      };
 
-    linkStatements = lib.concatStringsSep "\n" (
-      map (pkg:
-        let binDir = "${lib.getBin pkg}/bin"; in
-        ''
-          if [ -d "${binDir}" ]; then
-            mkdir -p "$TARGET_DIR/.local/bin"
-            for bin in "${binDir}"/*; do
-              [ -e "$bin" ] || continue
-              ln -sf "$bin" "$TARGET_DIR/.local/bin/$(basename "$bin")"
-              echo "  linked $(basename "$bin")"
-            done
-          fi
-        ''
-      ) cfg.packages
-    );
-  in
-  # Force evaluation of all non-native checks before building the derivation.
-  # deepSeq walks the entire structure so every throw inside nonNativeChecks
-  # fires at Nix eval time, before any derivation is constructed.
-  builtins.deepSeq nonNativeChecks
-  pkgs.writeShellApplication {
-    name          = "workspace-${name}";
-    runtimeInputs = [ pkgs.coreutils ];
+  # ---------------------------------------------------------------------------
+  # buildProvisionDrv — produce the workspace-<name> provisioning shell script.
+  #
+  # `provisionPkgs` is used for the build environment (writeShellApplication,
+  # writeText, coreutils).  It may differ from the module-level `pkgs` used
+  # for option type evaluation.
+  # ---------------------------------------------------------------------------
+  buildProvisionDrv = name: cfg: provisionPkgs:
+    let
+      toStorePath = destName: entry:
+        if entry.source != null then entry.source
+        else provisionPkgs.writeText destName entry.text;
 
-    text = ''
-      set -euo pipefail
+      mcpJsonEntry = lib.optionalAttrs (cfg.bob.mcpServers != {}) {
+        ".bob/mcp.json" = {
+          text   = null;
+          source = provisionPkgs.writeText "mcp.json" (builtins.toJSON {
+            mcpServers = lib.mapAttrs (_: mkMcpServerJson) cfg.bob.mcpServers;
+          });
+        };
+      };
 
-      usage() {
-        cat <<'USAGE'
-      Usage: workspace-${name} <directory>
+      allFiles =
+        cfg.file //
+        lib.mapAttrs' (k: v: lib.nameValuePair ".bob/rules/${k}"  v) cfg.bob.rules  //
+        lib.mapAttrs' (k: v: lib.nameValuePair ".bob/skills/${k}" v) cfg.bob.skills //
+        mcpJsonEntry;
 
-      Sets up the "${name}" workspace in the given directory.
+      gitignorePaths = lib.filter (p: !(allFiles.${p}.dontIgnore or false))
+                         (lib.attrNames allFiles);
 
-      Arguments:
-        directory   Path to the target directory (must already exist)
-      USAGE
-      }
+      gitignoreStatement =
+        if gitignorePaths == [] then ""
+        else
+          let
+            addLines = lib.concatStringsSep "\n" (
+              map (p: ''grep -qxF ${lib.escapeShellArg p} "$GITIGNORE" || echo ${lib.escapeShellArg p} >> "$GITIGNORE"'')
+                gitignorePaths
+            );
+          in
+          ''
+            GITIGNORE="$TARGET_DIR/.gitignore"
+            touch "$GITIGNORE"
+            ${addLines}
+            echo "  updated .gitignore"
+          '';
 
-      if [ "$#" -ne 1 ]; then
-        echo "Error: exactly one argument (directory) is required." >&2
-        usage >&2
-        exit 1
-      fi
+      writeStatements = lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (filePath: entry:
+          let stored = toStorePath filePath entry; in
+          ''
+            if [ -d "${stored}" ]; then
+              mkdir -p "$TARGET_DIR/${filePath}"
+              cp -r --no-preserve=mode "${stored}/." "$TARGET_DIR/${filePath}/"
+              echo "  copied directory ${filePath}"
+            else
+              install -D --mode=0644 "${stored}" "$TARGET_DIR/${filePath}"
+              echo "  wrote ${filePath}"
+            fi
+          ''
+        ) allFiles
+      );
 
-      TARGET_DIR="$1"
+      linkStatements = lib.concatStringsSep "\n" (
+        map (pkg:
+          let binDir = "${lib.getBin pkg}/bin"; in
+          ''
+            if [ -d "${binDir}" ]; then
+              mkdir -p "$TARGET_DIR/.local/bin"
+              for bin in "${binDir}"/*; do
+                [ -e "$bin" ] || continue
+                ln -sf "$bin" "$TARGET_DIR/.local/bin/$(basename "$bin")"
+                echo "  linked $(basename "$bin")"
+              done
+            fi
+          ''
+        ) cfg.packages
+      );
 
-      if [ ! -d "$TARGET_DIR" ]; then
-        echo "Error: directory does not exist: $TARGET_DIR" >&2
-        exit 1
-      fi
+      nonNativeChecks = mkNonNativeChecks name cfg;
+    in
+    # Force non-native checks before building the derivation.
+    builtins.deepSeq nonNativeChecks
+    provisionPkgs.writeShellApplication {
+      name          = "workspace-${name}";
+      runtimeInputs = [ provisionPkgs.coreutils ];
 
-      echo "Setting up workspace '${name}' in $TARGET_DIR ..."
-      ${writeStatements}
-      ${linkStatements}
-      ${gitignoreStatement}
-      echo "Done."
-    '';
-  }
+      text = ''
+        set -euo pipefail
+
+        usage() {
+          cat <<'USAGE'
+        Usage: workspace-${name} <directory>
+
+        Sets up the "${name}" workspace in the given directory.
+
+        Arguments:
+          directory   Path to the target directory (must already exist)
+        USAGE
+        }
+
+        if [ "$#" -ne 1 ]; then
+          echo "Error: exactly one argument (directory) is required." >&2
+          usage >&2
+          exit 1
+        fi
+
+        TARGET_DIR="$1"
+
+        if [ ! -d "$TARGET_DIR" ]; then
+          echo "Error: directory does not exist: $TARGET_DIR" >&2
+          exit 1
+        fi
+
+        echo "Setting up workspace '${name}' in $TARGET_DIR ..."
+        ${writeStatements}
+        ${linkStatements}
+        ${gitignoreStatement}
+        echo "Done."
+      '';
+    };
+
+  # ---------------------------------------------------------------------------
+  # buildWorkspaceConfig — system-independent core builder.
+  #
+  # Returns:
+  #   wsCfg.configBlock    – the raw config block passed in
+  #   wsCfg.config         – evaluated workspace.* options attrset
+  #   wsCfg.override fn    – new wsCfg with configBlock transformed by fn
+  #   wsCfg.provision pkgs – workspace-<name> provisioning derivation
+  #
+  # `extraModules` – additional NixOS-style modules injected into evalModules.
+  #   Modules receive `pkgs` (the closure-level one) via `_module.args`.
+  # ---------------------------------------------------------------------------
+  buildWorkspaceConfig = name: configBlock: extraModules:
+    let
+      evaluated = lib.evalModules {
+        modules =
+          [ workspaceOptions ]
+          ++ extraModules
+          ++ [
+            { config = configBlock; }
+            # Inject pkgs so extra modules can reference e.g. pkgs.git.
+            { _module.args = { inherit pkgs; }; }
+          ]
+          ++ lib.optional (nativeOverride != null) {
+            config.workspace.native = lib.mkForce nativeOverride;
+          };
+      };
+
+      cfg = evaluated.config.workspace;
+    in
+    {
+      # The raw config block attrset (pre-evaluation).
+      # Re-export this from a workspace module file to let mkWorkspace/
+      # mkWorkspaceConfig import the result under a new name.
+      inherit configBlock;
+
+      # The fully-evaluated workspace options attrset.
+      config = cfg;
+
+      # Return a new wsCfg with the config block transformed by overrideFn.
+      # extraModules are preserved across the override.
+      override = overrideFn:
+        buildWorkspaceConfig name (overrideFn configBlock) extraModules;
+
+      # Return a provisioning writeShellApplication for the given pkgs.
+      provision = provisionPkgs: buildProvisionDrv name cfg provisionPkgs;
+    };
+
+  # ---------------------------------------------------------------------------
+  # bindWorkspaceConfig — legacy compatibility wrapper.
+  #
+  # Eagerly calls .provision with boundPkgs and attaches .override so the
+  # return value is a derivation (not a wsCfg attrset), matching the old API.
+  # ---------------------------------------------------------------------------
+  bindWorkspaceConfig = name: configBlock: extraModules: boundPkgs:
+    let
+      wsCfg   = buildWorkspaceConfig name configBlock extraModules;
+      provDrv = wsCfg.provision boundPkgs;
+    in
+    provDrv // {
+      override = overrideFn:
+        bindWorkspaceConfig name (overrideFn configBlock) extraModules boundPkgs;
+    };
+
+in
+{
+  # ---------------------------------------------------------------------------
+  # mkWorkspaceConfig — system-independent public entry point.
+  #
+  # Returns a workspace configuration object (see buildWorkspaceConfig above).
+  # Use this to populate `workspaceConfigurations` flake outputs.
+  #
+  # `extraModules` is an optional list of NixOS-style module paths/functions
+  # that extend the option schema.  Defaults to [].
+  # ---------------------------------------------------------------------------
+  mkWorkspaceConfig = name: moduleFile:
+    { extraModules ? [] }:
+    let
+      returned    = (import moduleFile) { inherit pkgs utils; workspaces = {}; };
+      configBlock = returned.workspaces.${name};
+    in
+    buildWorkspaceConfig name configBlock extraModules;
+
+  # ---------------------------------------------------------------------------
+  # mkWorkspace — system-bound legacy entry point.
+  #
+  # Returns a writeShellApplication derivation (workspace-<name>) with
+  # .override attached, bound to the module-level pkgs.
+  # Passes no extraModules — for module injection use mkWorkspaceConfig.
+  # ---------------------------------------------------------------------------
+  mkWorkspace = name: moduleFile:
+    let
+      returned    = (import moduleFile) { inherit pkgs utils; workspaces = {}; };
+      configBlock = returned.workspaces.${name};
+    in
+    bindWorkspaceConfig name configBlock [] pkgs;
+}

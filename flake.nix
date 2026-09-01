@@ -25,58 +25,116 @@
     in
     {
       # -----------------------------------------------------------------------
-      # lib.mkWorkspace
+      # lib.mkWorkspaceConfig
       #
-      # Build a workspace derivation from a module file.
+      # Build a system-independent workspace configuration object from a module
+      # file.  Returns a wsCfg with .config, .override, and .provision pkgs.
+      #
+      # Usage (in a downstream flake):
+      #
+      #   workspaceConfigurations."my-workspace" =
+      #     inputs.alice-module.lib.mkWorkspaceConfig
+      #       "my-workspace" ./workspace.nix {};
+      #
+      #   # To get a runnable derivation for a specific system:
+      #   packages.${system}.my-workspace =
+      #     inputs.alice-module.workspaceConfigurations."my-workspace".provision pkgs;
+      # -----------------------------------------------------------------------
+      lib.mkWorkspaceConfig = name: moduleFile:
+        let
+          engine = import ./modules/workspaces.nix {
+            pkgs = import nixpkgs { system = builtins.currentSystem; };
+            flakeRoot = self;
+          };
+        in
+        engine.mkWorkspaceConfig name moduleFile;
+
+      # -----------------------------------------------------------------------
+      # lib.mkWorkspaceConfigIn
+      #
+      # Like lib.mkWorkspaceConfig but lets the caller supply pkgs and a custom
+      # flakeRoot so that utils.root resolves relative to their own repository.
+      # -----------------------------------------------------------------------
+      lib.mkWorkspaceConfigIn = pkgs: flakeRoot: name: moduleFile:
+        (import ./modules/workspaces.nix { inherit pkgs flakeRoot; }).mkWorkspaceConfig name moduleFile;
+
+      # -----------------------------------------------------------------------
+      # lib.mkWorkspace  (legacy / convenience)
+      #
+      # Build a workspace derivation from a module file.  Returns a
+      # writeShellApplication with .override attached.
       #
       # Usage (in a downstream flake):
       #
       #   let
-      #     alice = inputs.alice-module;
-      #     pkgs  = import inputs.nixpkgs { inherit system; };
-      #     mkWs  = alice.lib.mkWorkspace pkgs;
+      #     mkWs = alice.lib.mkWorkspace pkgs;
       #   in {
-      #     packages.my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
+      #     packages.my-workspace = mkWs "my-workspace" ./workspace.nix;
       #   }
-      #
-      # The module file must follow the convention described in
-      # modules/workspaces.nix — a function of { pkgs, workspaces, utils } that
-      # returns { workspaces."<name>" = { workspace = ...; }; }.
-      #
-      # `utils.root relPath` resolves a path relative to the *calling* flake's
-      # root.  Pass `flakeRoot` (the second arg to mkWorkspaceIn) to customise
-      # this; if omitted it defaults to the root of *this* flake (useful for
-      # the built-in example workspaces).
       # -----------------------------------------------------------------------
       lib.mkWorkspace = pkgs:
         let
-          # When consumers call this from their own flake they will import
-          # modules/workspaces.nix with their own flakeRoot.  The default
-          # here points at this flake's own root so the built-in example
-          # workspaces resolve correctly.
           engine = import ./modules/workspaces.nix {
             inherit pkgs;
             flakeRoot = self;
           };
         in
-        engine;
+        engine.mkWorkspace;
 
       # -----------------------------------------------------------------------
-      # lib.mkWorkspaceIn
+      # lib.mkWorkspaceIn  (legacy / convenience)
       #
-      # Like lib.mkWorkspace but lets the caller supply a custom flakeRoot
-      # so that utils.root resolves relative to their own repository.
-      #
-      # Usage (in a downstream flake):
-      #
-      #   let
-      #     mkWs = inputs.alice-module.lib.mkWorkspaceIn pkgs self;
-      #   in {
-      #     packages.my-workspace = mkWs "my-workspace" ./workspaces/my-workspace/default.nix;
-      #   }
+      # Like lib.mkWorkspace but lets the caller supply a custom flakeRoot.
       # -----------------------------------------------------------------------
       lib.mkWorkspaceIn = pkgs: flakeRoot:
-        import ./modules/workspaces.nix { inherit pkgs flakeRoot; };
+        (import ./modules/workspaces.nix { inherit pkgs flakeRoot; }).mkWorkspace;
+
+      # -----------------------------------------------------------------------
+      # workspaceModules
+      #
+      # System-independent module file paths consumers can import into their
+      # own evalModules call or pass via extraModules.
+      # -----------------------------------------------------------------------
+      workspaceModules = {
+        workspaces = ./modules/workspaces.nix;
+        git-tools  = ./examples/modules/git-tools.nix;
+      };
+
+      # -----------------------------------------------------------------------
+      # workspaceConfigurations
+      #
+      # System-independent workspace configuration objects.  Each value has
+      # .config, .override, and .provision pkgs.
+      #
+      # To provision for the current system:
+      #   nix run .#workspaceConfigurations.sample-workspace.provision
+      # -----------------------------------------------------------------------
+      workspaceConfigurations =
+        let
+          pkgs   = import nixpkgs {
+            system = builtins.currentSystem;
+            config.allowUnfree = true;
+          };
+          engine = import ./modules/workspaces.nix { inherit pkgs; flakeRoot = self; };
+        in
+        {
+          # ------------------------------------------------------------------
+          # sample-workspace — demonstrates every supported option, including
+          # the git-tools NixOS-style extra module.
+          # ------------------------------------------------------------------
+          sample-workspace =
+            engine.mkWorkspaceConfig "sample-workspace"
+              ./examples/sample-workspace/default.nix
+              { extraModules = [ ./examples/modules/git-tools.nix ]; };
+
+          # ------------------------------------------------------------------
+          # extended-workspace — demonstrates the .override pattern.
+          # ------------------------------------------------------------------
+          extended-workspace =
+            engine.mkWorkspaceConfig "extended-workspace"
+              ./examples/workspace.nix
+              {};
+        };
 
       # -----------------------------------------------------------------------
       # Per-system outputs
@@ -88,60 +146,40 @@
             config.allowUnfree = true;
           };
 
-          mkWs = self.lib.mkWorkspace pkgs;
+          engine    = import ./modules/workspaces.nix { inherit pkgs; flakeRoot = self; };
+          mkWs      = engine.mkWorkspace;
+          mkWsCfg   = engine.mkWorkspaceConfig;
+
+          # sample-workspace uses the git-tools extra module.
+          sampleWsCfg = mkWsCfg "sample-workspace"
+            ./examples/sample-workspace/default.nix
+            { extraModules = [ ./examples/modules/git-tools.nix ]; };
         in
         {
           # ------------------------------------------------------------------
           # alice — the imperative workspace provisioning CLI.
-          #
-          # Inspired by home-manager / nixos-rebuild.  Accepts a workspace.nix
-          # path and a target directory at runtime and provisions on the spot.
-          #
           # Run with:  nix run .#alice -- switch --workspace ./workspace.nix --target .
           # ------------------------------------------------------------------
           alice = pkgs.callPackage ./packages/alice {
             inherit pkgs;
-            # Capture the store path of the engine module at build time so the
-            # runtime script can reference it without needing the source tree.
             workspacesModule = ./modules/workspaces.nix;
           };
 
           # ------------------------------------------------------------------
           # Example workspace: sample-workspace
-          #
-          # Demonstrates every supported workspace option (workspace.file,
-          # workspace.bob.rules, workspace.bob.skills, workspace.bob.mcpServers,
-          # workspace.packages).
-          #
-          # The first argument to mkWs is the workspace *name* — it must match
-          # the key used in workspaces."<name>" inside the module file.
-          # The second argument is the path to the module file itself.
-          #
-          # Run with:  nix run .#workspace-sample-workspace -- /path/to/target-dir
           # ------------------------------------------------------------------
           workspace-sample-workspace =
-            mkWs "sample-workspace" ./examples/sample-workspace/default.nix;
+            sampleWsCfg.provision pkgs;
 
           # ------------------------------------------------------------------
           # Example workspace: extended-workspace
-          #
-          # Demonstrates how to override and extend an upstream workspace
-          # definition.  The module at examples/workspace.nix imports
-          # examples/sample-workspace/default.nix, merges its config block
-          # using Nix attribute operators (// for attrsets, ++ for lists),
-          # and re-exports the result under a different workspace name.
-          #
-          # Both workspaces can coexist and are built independently — the
-          # extended one shares no mutable state with the upstream one.
-          #
-          # Run with:  nix run .#workspace-extended-workspace -- /path/to/target-dir
           # ------------------------------------------------------------------
           workspace-extended-workspace =
             mkWs "extended-workspace" ./examples/workspace.nix;
 
           # Default package: the sample workspace
           default =
-            mkWs "sample-workspace" ./examples/sample-workspace/default.nix;
+            sampleWsCfg.provision pkgs;
         }
       );
 
@@ -153,7 +191,8 @@
           };
 
           # Convenience: build a workspace engine with an optional nativeOverride.
-          mkEngine = args: import ./modules/workspaces.nix ({ inherit pkgs; flakeRoot = self; } // args);
+          # Now returns an attrset { mkWorkspaceConfig; mkWorkspace; } — use .mkWorkspace.
+          mkEngine = args: (import ./modules/workspaces.nix ({ inherit pkgs; flakeRoot = self; } // args)).mkWorkspace;
 
           # Inline workspace files used by the non-native checks.
           # Each is a store path produced by pkgs.writeText — safe to pass as a
