@@ -1,3 +1,9 @@
+# Workspace Config Object Specification
+
+## Purpose
+Defines the `mkWorkspaceConfig` engine function and the workspace configuration object (`wsCfg`) it returns, enabling system-independent evaluation of workspace modules before binding to a specific `pkgs`.
+
+
 ## Requirements
 
 ### Requirement: mkWorkspaceConfig returns a system-independent configuration object

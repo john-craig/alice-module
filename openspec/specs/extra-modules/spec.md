@@ -1,3 +1,9 @@
+# Extra Modules Specification
+
+## Purpose
+Defines how alice-module workspaces can be extended with additional NixOS-style modules via the `extraModules` argument to `mkWorkspaceConfig`, enabling third-party and project-specific option namespaces.
+
+
 ## Requirements
 
 ### Requirement: mkWorkspaceConfig accepts an extraModules list

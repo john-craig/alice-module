@@ -448,6 +448,66 @@ let
     };
 
   # ---------------------------------------------------------------------------
+  # buildPrintDrv — produce the workspace-<name>-print config-inspection script.
+  #
+  # The evaluated config is serialised to a Nix expression at build time via
+  # lib.generators.toPretty and baked into the store.  The shell script
+  # simply installs that store path to the caller-supplied output file — no
+  # runtime Nix evaluation is required.
+  # ---------------------------------------------------------------------------
+  buildPrintDrv = name: cfg: printPkgs:
+    let
+      serializeEntry = entry: {
+        inherit (entry) dontIgnore;
+        text   = entry.text;
+        source = if entry.source != null then builtins.toString entry.source else null;
+      };
+
+      configNix = printPkgs.writeText "workspace-${name}-config.nix"
+        (lib.generators.toPretty {} {
+          inherit name;
+          file     = lib.mapAttrs (_: serializeEntry) cfg.file;
+          bob      = {
+            rules      = lib.mapAttrs (_: serializeEntry) cfg.bob.rules;
+            skills     = lib.mapAttrs (_: serializeEntry) cfg.bob.skills;
+            mcpServers = lib.mapAttrs (_: mkMcpServerJson) cfg.bob.mcpServers;
+          };
+          packages = map (p: builtins.toString (lib.getBin p)) cfg.packages;
+        });
+    in
+    printPkgs.writeShellApplication {
+      name          = "workspace-${name}-print";
+      runtimeInputs = [ printPkgs.coreutils ];
+
+      text = ''
+        set -euo pipefail
+
+        usage() {
+          cat <<'USAGE'
+        Usage: workspace-${name}-print <output-file>
+
+        Prints the "${name}" workspace configuration as a Nix expression to
+        the given file.
+
+        Arguments:
+          output-file   Destination file path (parent directory must exist).
+        USAGE
+        }
+
+        if [ "$#" -ne 1 ]; then
+          echo "Error: exactly one argument (output-file) is required." >&2
+          usage >&2
+          exit 1
+        fi
+
+        OUTPUT_FILE="$1"
+
+        install -D --mode=0644 "${configNix}" "$OUTPUT_FILE"
+        echo "Workspace '${name}' configuration written to $OUTPUT_FILE"
+      '';
+    };
+
+  # ---------------------------------------------------------------------------
   # buildWorkspaceConfig — system-independent core builder.
   #
   # Returns:
@@ -455,6 +515,7 @@ let
   #   wsCfg.config         – evaluated workspace.* options attrset
   #   wsCfg.override fn    – new wsCfg with configBlock transformed by fn
   #   wsCfg.provision pkgs – workspace-<name> provisioning derivation
+  #   wsCfg.print     pkgs – workspace-<name>-print config-inspection derivation
   #
   # `extraModules` – additional NixOS-style modules injected into evalModules.
   #   Modules receive `pkgs` (the closure-level one) via `_module.args`.
@@ -493,6 +554,9 @@ let
 
       # Return a provisioning writeShellApplication for the given pkgs.
       provision = provisionPkgs: buildProvisionDrv name cfg provisionPkgs;
+
+      # Return a config-inspection writeShellApplication for the given pkgs.
+      print = printPkgs: buildPrintDrv name cfg printPkgs;
     };
 
   # ---------------------------------------------------------------------------
@@ -509,6 +573,7 @@ let
     provDrv // {
       override = overrideFn:
         bindWorkspaceConfig name (overrideFn configBlock) extraModules boundPkgs;
+      print = wsCfg.print boundPkgs;
     };
 
 in

@@ -1,8 +1,5 @@
-# Workspace Print Specification
+## MODIFIED Requirements
 
-## Purpose
-Defines the `workspace-<name>-print` derivation produced by `wsCfg.print pkgs`, which bakes the evaluated workspace configuration as a Nix expression into the store and provides a script for writing it to a file at runtime.
-## Requirements
 ### Requirement: workspace-<name>-print derivation is produced by wsCfg.print
 `wsCfg.print pkgs` SHALL return a `writeShellApplication` derivation named `workspace-<name>-print`. The derivation SHALL be built at Nix evaluation time — the evaluated configuration is serialised as a Nix expression and baked into the store during `nix build`, so the runtime script requires no Nix evaluation.
 
@@ -49,4 +46,3 @@ Each built-in example workspace SHALL expose both `workspace-<name>` (provision)
 #### Scenario: workspace-sample-workspace-print in packages
 - **WHEN** the flake is evaluated for a given system
 - **THEN** `packages.<system>.workspace-sample-workspace-print` SHALL be a buildable derivation
-

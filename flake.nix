@@ -172,10 +172,19 @@
             sampleWsCfg.provision pkgs;
 
           # ------------------------------------------------------------------
+          # Example workspace: sample-workspace — print config
+          # ------------------------------------------------------------------
+          workspace-sample-workspace-print =
+            sampleWsCfg.print pkgs;
+
+          # ------------------------------------------------------------------
           # Example workspace: extended-workspace
           # ------------------------------------------------------------------
           workspace-extended-workspace =
             mkWs "extended-workspace" ./examples/workspace.nix;
+
+          workspace-extended-workspace-print =
+            (mkWsCfg "extended-workspace" ./examples/workspace.nix {}).print pkgs;
 
           # Default package: the sample workspace
           default =
@@ -613,6 +622,32 @@
             echo "PASS: alice-switch-rejects-unknown-option verified"
             touch $out
           '';
+
+          # ------------------------------------------------------------------
+          # workspace-sample-workspace-print
+          #
+          # Builds the print derivation, runs it against a temp file, and
+          # asserts the output exists and contains the workspace name.
+          # ------------------------------------------------------------------
+          workspace-sample-workspace-print = pkgs.runCommand "workspace-sample-workspace-print" {
+            nativeBuildInputs = [ self.packages.${system}.workspace-sample-workspace-print ];
+          } ''
+            out_file=$(mktemp)
+            workspace-sample-workspace-print "$out_file"
+
+            if [ ! -f "$out_file" ]; then
+              echo "FAIL: output file was not created"
+              exit 1
+            fi
+            if ! grep -q "sample-workspace" "$out_file"; then
+              echo "FAIL: output does not contain workspace name"
+              cat "$out_file"
+              exit 1
+            fi
+
+            echo "PASS: workspace-sample-workspace-print verified"
+            touch $out
+          '';
         }
       );
 
@@ -629,10 +664,20 @@
           program = "${self.packages.${system}.workspace-sample-workspace}/bin/workspace-sample-workspace";
         };
 
+        workspace-sample-workspace-print = {
+          type    = "app";
+          program = "${self.packages.${system}.workspace-sample-workspace-print}/bin/workspace-sample-workspace-print";
+        };
+
         # The extended workspace app — shows override/extension in action.
         workspace-extended-workspace = {
           type    = "app";
           program = "${self.packages.${system}.workspace-extended-workspace}/bin/workspace-extended-workspace";
+        };
+
+        workspace-extended-workspace-print = {
+          type    = "app";
+          program = "${self.packages.${system}.workspace-extended-workspace-print}/bin/workspace-extended-workspace-print";
         };
 
         default = {
