@@ -39,7 +39,7 @@
 #
 #   workspace-my-workspace /path/to/target-dir
 #
-{ pkgs, flakeRoot }:
+{ pkgs, flakeRoot, nativeOverride ? null }:
 
 let
   lib = pkgs.lib;
@@ -202,6 +202,38 @@ let
         example = lib.literalExpression "[ pkgs.ripgrep pkgs.jq ]";
       };
 
+      native = lib.mkOption {
+        type        = lib.types.bool;
+        default     = true;
+        description = ''
+          When `true` (the default), the workspace assumes that the Nix store
+          and host-native tooling are available on the target host.  Set to
+          `false` to declare that the Nix store must not be assumed present
+          (e.g. containers or restricted environments).  In non-native mode
+          the engine rejects any option that requires a permanent Nix store
+          path: `workspace.packages`, `source`-based file entries, and MCP
+          server commands that start with `/nix/store/`.
+        '';
+      };
+
+      assertHostBinaries = lib.mkOption {
+        type        = lib.types.listOf lib.types.str;
+        default     = [];
+        description = ''
+          Short executable names (e.g. `"node"`, `"npx"`) that the workspace
+          depends on being present on the target host.  At provision time
+          (`alice switch`) each name is checked against a host binaries
+          manifest file (default: `.alice/host-binaries` in the target
+          directory).  Any name absent from the manifest causes provisioning
+          to abort with a hard error before any file is written.
+
+          This option is meaningful only when `workspace.native = false`.
+          When `native = true`, a non-empty list produces a warning but is
+          otherwise ignored.
+        '';
+        example = [ "node" "npx" ];
+      };
+
     };
   };
 
@@ -234,10 +266,76 @@ name: moduleFile:
       modules = [
         workspaceOptions
         { config = configBlock; }
-      ];
+      ] ++ lib.optional (nativeOverride != null) {
+        # CLI --native / --no-native override: takes priority over the module declaration.
+        config.workspace.native = lib.mkForce nativeOverride;
+      };
     };
 
     cfg = evaluated.config.workspace;
+
+    # ---------------------------------------------------------------------------
+    # Non-native enforcement — evaluated at Nix eval time so errors are caught
+    # before any derivation is built or any file is written.
+    # ---------------------------------------------------------------------------
+
+    # Check a condition; throw a clear error if it fails.
+    # Returns null so it can be sequenced with `lib.seq` or used in an assert.
+    requireNative = condition: message:
+      if !condition
+      then throw "alice workspace '${name}': ${message}"
+      else null;
+
+    nonNativeChecks =
+      if cfg.native then null
+      else
+        let
+          # 2.1  packages must be empty
+          _checkPackages = requireNative
+            (cfg.packages == [])
+            "workspace.native = false but workspace.packages is non-empty. \
+             Packages require Nix store paths and cannot be used in non-native mode. \
+             Remove all entries from workspace.packages.";
+
+          # 2.2  file / rules / skills: no source entries
+          checkSourceEntry = optionPath: entries:
+            lib.mapAttrsToList (key: entry:
+              requireNative
+                (entry.source == null)
+                "${optionPath}.\"${key}\" uses source = …, which requires a Nix store path. \
+                 Use text = … instead, or remove the entry, when workspace.native = false."
+            ) entries;
+
+          _checkFileSources  = checkSourceEntry "workspace.file"       cfg.file;
+          _checkRuleSources  = checkSourceEntry "workspace.bob.rules"  cfg.bob.rules;
+          _checkSkillSources = checkSourceEntry "workspace.bob.skills" cfg.bob.skills;
+
+          # 2.3  MCP servers: command must not be a Nix store path
+          # 2.4  MCP servers: non-store command must be declared in assertHostBinaries
+          _checkMcpCommands = lib.mapAttrsToList (serverName: srv:
+            if srv.command == null then null          # HTTP server — no command
+            else if lib.hasPrefix "/nix/store/" srv.command then
+              requireNative false
+                "workspace.bob.mcpServers.\"${serverName}\" has command = \"${srv.command}\", \
+                 which is a Nix store path. Nix store paths are not permitted when \
+                 workspace.native = false. Use a host binary name instead, or remove this server."
+            else
+              let binName = builtins.baseNameOf srv.command; in
+              requireNative
+                (builtins.elem binName cfg.assertHostBinaries)
+                "workspace.bob.mcpServers.\"${serverName}\" uses command = \"${srv.command}\" \
+                 (resolved name: \"${binName}\"), but \"${binName}\" is not listed in \
+                 workspace.assertHostBinaries. Add \"${binName}\" to assertHostBinaries so \
+                 alice can verify it is present on the target host at provision time."
+          ) cfg.bob.mcpServers;
+
+          # Force evaluation of all checks; the value itself is unused.
+          _allChecks = {
+            inherit _checkPackages _checkFileSources _checkRuleSources
+                    _checkSkillSources _checkMcpCommands;
+          };
+        in
+          _allChecks;
 
     toStorePath = destName: entry:
       if entry.source != null then entry.source
@@ -320,6 +418,10 @@ name: moduleFile:
       ) cfg.packages
     );
   in
+  # Force evaluation of all non-native checks before building the derivation.
+  # deepSeq walks the entire structure so every throw inside nonNativeChecks
+  # fires at Nix eval time, before any derivation is constructed.
+  builtins.deepSeq nonNativeChecks
   pkgs.writeShellApplication {
     name          = "workspace-${name}";
     runtimeInputs = [ pkgs.coreutils ];
