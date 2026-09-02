@@ -1,3 +1,9 @@
+# Workspace Native Option Specification
+
+## Purpose
+Defines the `workspace.native` boolean option that controls whether a workspace assumes host-native tooling (Nix store) is available, and the corresponding `alice switch` CLI flags that allow overriding this value at provision time.
+
+
 ## Requirements
 
 ### Requirement: workspace.native module option

@@ -12,6 +12,18 @@
   workspaces."sample-workspace" = {
 
     # -------------------------------------------------------------------------
+    # workspace.gitTools
+    #
+    # Options declared by the injected git-tools NixOS module.  The module
+    # contributes rules, a skill, and packages only when enable = true.
+    # Individual features can be turned off independently.
+    # -------------------------------------------------------------------------
+    workspace.gitTools.enable = true;
+    # workspace.gitTools.rules    = false;  # uncomment to suppress git-rules.md
+    # workspace.gitTools.skill    = false;  # uncomment to suppress GitWorkflow.md
+    # workspace.gitTools.packages = false;  # uncomment to skip git + delta
+
+    # -------------------------------------------------------------------------
     # workspace.file
     #
     # Arbitrary files written into the root of the target directory.
