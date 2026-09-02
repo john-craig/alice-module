@@ -1,4 +1,5 @@
 .bob/references
+.opencode/
 generated-workspace/
 result
 result-*

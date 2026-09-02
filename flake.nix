@@ -482,15 +482,30 @@
           # native-false-allows-declared-host-binary
           #
           # An MCP server whose plain command name IS listed in
-          # assertHostBinaries must evaluate successfully when native = false.
-          # (Runtime manifest check is a CLI concern; this tests Nix-eval pass.)
+          # assertHostBinaries must evaluate successfully when native = false
+          # AND the provisioned .bob/mcp.json must contain the server entry.
           # ------------------------------------------------------------------
           native-false-allows-declared-host-binary =
-            let
-              result = builtins.tryEval (mkEngine {} "test-ws" wsNativeFalseDeclaredBinary);
-            in
-            assert result.success;
-            pkgs.runCommand "native-false-allows-declared-host-binary" {} "touch $out";
+            let ws = mkEngine {} "test-ws" wsNativeFalseDeclaredBinary; in
+            pkgs.runCommand "native-false-allows-declared-host-binary" {
+              nativeBuildInputs = [ ws pkgs.gnugrep ];
+            } ''
+              target=$(mktemp -d)
+              workspace-test-ws "$target"
+
+              if [ ! -f "$target/.bob/mcp.json" ]; then
+                echo "FAIL: .bob/mcp.json was not created"
+                exit 1
+              fi
+              if ! grep -q "npx" "$target/.bob/mcp.json"; then
+                echo "FAIL: .bob/mcp.json does not contain the npx-based MCP server entry"
+                cat "$target/.bob/mcp.json"
+                exit 1
+              fi
+
+              echo "PASS: native-false-allows-declared-host-binary verified"
+              touch $out
+            '';
 
           # ------------------------------------------------------------------
           # native-override-forces-native-false
